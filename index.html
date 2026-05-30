@@ -517,25 +517,61 @@
         }
 
         .target.active {
-            border-color: var(--border-strong);
-            background:
-                linear-gradient(180deg, rgba(245, 158, 11, 0.18), rgba(56, 189, 248, 0.14)),
-                rgba(255, 255, 255, 0.08);
-            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+            border-color: var(--accent);
+            box-shadow: 0 0 24px rgba(245, 158, 11, 0.24), inset 0 0 40px rgba(245, 158, 11, 0.06);
+            background: rgba(245, 158, 11, 0.08);
         }
 
-        .target h3 {
-            margin: 10px 0 0;
-            font-size: clamp(20px, 1.55vw, 28px);
-            font-weight: 900;
-            line-height: 1.15;
+        .target.active .logo-wrap img {
+            transform: scale(1.06);
         }
 
-        .target p {
-            margin: 10px 0 0;
-            font-size: var(--copy-size);
-            line-height: 1.6;
-            color: rgba(226, 232, 240, 0.88);
+        .target .logo-wrap {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+            min-height: 0;
+            overflow: hidden;
+            padding: 6px 8px;
+        }
+
+        .target .logo-wrap img {
+            max-width: 72%;
+            max-height: 55%;
+            object-fit: contain;
+            transition: transform 0.25s ease;
+            filter: drop-shadow(0 2px 6px rgba(0,0,0,0.25));
+        }
+
+        .target:hover .logo-wrap img {
+            transform: scale(1.1);
+        }
+
+        .target .target-label {
+            text-align: center;
+            padding-top: 8px;
+            border-top: 1px solid rgba(255,255,255,0.06);
+            width: 100%;
+        }
+
+        .target .target-label .eyebrow {
+            margin: 0 0 2px;
+            font-size: 0.7rem;
+        }
+
+        .target .target-label h3 {
+            margin: 0;
+            font-size: clamp(13px, 0.95vw, 17px);
+            font-weight: 700;
+        }
+
+        .target .target-label p {
+            margin: 4px 0 0;
+            font-size: 0.72rem;
+            opacity: 0.6;
+            color: rgba(226, 232, 240, 0.7);
         }
 
         .step-footer {
@@ -768,6 +804,103 @@
                 height: auto;
             }
         }
+
+        /* ── 扫描间隔设置（对齐颗粒度） ── */
+        .scan-interval-card {
+            margin-top: var(--section-gap);
+        }
+
+        .scan-interval-card .card-subtitle {
+            margin: 4px 0 16px;
+            font-size: 0.88rem;
+            color: var(--muted);
+            line-height: 1.5;
+        }
+
+        .scan-interval-row {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 14px;
+        }
+
+        .interval-presets {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+
+        .interval-chip {
+            padding: 6px 14px;
+            border-radius: 999px;
+            border: 1px solid var(--border);
+            background: var(--panel-3);
+            color: var(--text);
+            font-size: 0.82rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+
+        .interval-chip:hover {
+            border-color: var(--accent);
+            background: rgba(245, 158, 11, 0.12);
+        }
+
+        .interval-chip.active {
+            border-color: var(--accent);
+            background: rgba(245, 158, 11, 0.18);
+            color: var(--accent);
+            box-shadow: 0 0 12px rgba(245, 158, 11, 0.25);
+        }
+
+        .interval-custom {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            color: var(--muted);
+            font-size: 0.82rem;
+        }
+
+        .interval-custom label {
+            white-space: nowrap;
+        }
+
+        .interval-input {
+            width: 70px;
+            padding: 5px 8px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--panel-2);
+            color: var(--text);
+            font-size: 0.88rem;
+            font-weight: 600;
+            text-align: center;
+            outline: none;
+            transition: border-color 0.15s;
+            -moz-appearance: textfield;
+        }
+
+        .interval-input::-webkit-inner-spin-button,
+        .interval-input::-webkit-outer-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+
+        .interval-input:focus {
+            border-color: var(--accent-2);
+        }
+
+        .interval-hint {
+            margin: 12px 0 0;
+            font-size: 0.82rem;
+            color: var(--muted);
+        }
+
+        .interval-hint strong {
+            color: var(--accent);
+            font-weight: 700;
+        }
     </style>
 </head>
 <body>
@@ -824,7 +957,8 @@
                 gameAvoid: true,
                 steamSuppress: true,
                 gameFullCore: true,
-                disableEcores: false
+                disableEcores: false,
+                scanInterval: 60
             }
         };
 
@@ -886,6 +1020,15 @@
             render();
         }
 
+        function updateNumericSetting(key, value) {
+            var num = parseInt(value, 10);
+            if (isNaN(num) || num < 5) num = 5;
+            if (num > 300) num = 300;
+            app.state.settings[key] = num;
+            sendMessage("setting|" + key + "|" + num);
+            render();
+        }
+
         function selectGame(gameId) {
             app.state.selectedGame = gameId;
             sendMessage("game|" + gameId);
@@ -895,8 +1038,9 @@
         function toggleExecution() {
             if (!app.isNative) {
                 app.state.running = !app.state.running;
+                var iv = Number(app.state.settings.scanInterval) || 60;
                 app.state.statusText = app.state.running
-                    ? "守护已启动。游戏进程每 60 秒检查一次，平台进程每 61 秒检查一次。"
+                    ? "守护已启动。游戏进程每 " + iv + " 秒检查一次，平台进程每 " + (iv + 1) + " 秒检查一次。"
                     : "守护已停止，原始系统设置已恢复。";
                 render();
             }
@@ -967,14 +1111,22 @@
         }
 
         function renderStepTwo() {
+            const gameLogoMap = {
+                valorant: "valorant_logo.png",
+                delta: "deltaforce_logo.png",
+                cs2: "cs2_logo.png",
+                pubg: "pubg_logo.png"
+            };
             const targets = Object.keys(gameNames).map(function(gameId) {
                 const active = app.state.selectedGame === gameId;
                 return [
                     '<button class="target', active ? " active" : "", '" data-game="', gameId, '">',
+                    '<div class="logo-wrap"><img src="', gameLogoMap[gameId], '" alt="', gameNames[gameId], '" draggable="false" /></div>',
+                    '<div class="target-label">',
                     '<p class="eyebrow">目标游戏</p>',
                     "<h3>", gameNames[gameId], "</h3>",
-                    "<p>", active ? "当前已经选中这个配置。" : "点击切换到这个配置。", "</p>",
-                    "</button>"
+                    "<p>", active ? "当前已选中" : "点击切换", "</p>",
+                    "</div></button>"
                 ].join("");
             }).join("");
 
@@ -1005,6 +1157,9 @@
                     ["disableEcores", "减少 E 核干扰", app.state.hardware.hybrid ? "在大小核 CPU 上尽量把游戏固定到性能核心。" : "当前 CPU 不是大小核架构，不需要开启。", !app.state.hardware.hybrid]
                 ];
 
+            const scanPresets = [10, 15, 20, 30, 45, 60, 90, 120];
+            const curInterval = Number(app.state.settings.scanInterval) || 60;
+
             return [
                 '<div class="page">',
                 '<div class="step-three-bg"></div>',
@@ -1016,6 +1171,24 @@
                 '<div class="main-scroll"><section class="profile-card">',
                 '<h3 class="card-title">', icon("shield", 22), " 游戏专属进程控制</h3>",
                 '<div class="options-grid two">', options.map(function(item) { return optionCard(item[0], item[1], item[2], item[3]); }).join(""), "</div>",
+                "</section>",
+                '<section class="profile-card scan-interval-card">',
+                '<h3 class="card-title">', icon("activity", 18), " 扫描间隔（对齐颗粒度）</h3>",
+                '<p class="card-subtitle">设置守护循环的扫描频率。游戏进程与平台/ACE 进程自动错开 1 秒，避免资源争抢。</p>',
+                '<div class="scan-interval-row">',
+                '<div class="interval-presets">',
+                scanPresets.map(function(v) {
+                    var active = v === curInterval ? ' active' : '';
+                    return '<button class="interval-chip' + active + '" data-interval="' + v + '">' + v + 's</button>';
+                }).join(""),
+                '</div>',
+                '<div class="interval-custom">',
+                '<label>自定义</label>',
+                '<input type="number" class="interval-input" data-interval-input="1" min="5" max="300" value="' + curInterval + '" />',
+                '<span>秒</span>',
+                '</div>',
+                '</div>',
+                '<p class="interval-hint">✨ 游戏每 <strong>' + curInterval + 's</strong> → ACE/平台每 <strong>' + (curInterval + 1) + 's</strong>（错峰 1s，对齐颗粒度）</p>',
                 "</section></div>",
                 '<div class="step-footer">',
                 '<button class="btn btn-secondary" data-step="2">返回游戏列表</button>',
@@ -1077,6 +1250,47 @@
             const actionTarget = event.target.closest("[data-action]");
             if (actionTarget && actionTarget.getAttribute("data-action") === "execute") {
                 toggleExecution();
+                return;
+            }
+
+            const intervalChip = event.target.closest("[data-interval]");
+            if (intervalChip) {
+                updateNumericSetting("scanInterval", intervalChip.getAttribute("data-interval"));
+                return;
+            }
+        });
+
+        app.root.addEventListener("change", function(event) {
+            const intervalInput = event.target.closest("[data-interval-input]");
+            if (intervalInput) {
+                updateNumericSetting("scanInterval", intervalInput.value);
+                return;
+            }
+
+            const settingInput = event.target.closest("[data-setting]");
+            if (!settingInput) {
+                return;
+            }
+            updateSetting(settingInput.getAttribute("data-setting"), settingInput.checked);
+        });
+
+        app.root.addEventListener("input", function(event) {
+            const intervalInput = event.target.closest("[data-interval-input]");
+            if (intervalInput) {
+                // 实时预览数值，不发送消息
+                const raw = parseInt(intervalInput.value, 10);
+                if (!isNaN(raw) && raw >= 5 && raw <= 300) {
+                    app.state.settings.scanInterval = raw;
+                    // 只更新提示文本，不触发完整 render 以避免输入框失焦
+                    const hint = document.querySelector(".interval-hint");
+                    if (hint) {
+                        hint.innerHTML = '✨ 游戏每 <strong>' + raw + 's</strong> → ACE/平台每 <strong>' + (raw + 1) + 's</strong>（错峰 1s，对齐颗粒度）';
+                    }
+                    // 高亮匹配的预设
+                    document.querySelectorAll(".interval-chip").forEach(function(el) {
+                        el.classList.toggle("active", parseInt(el.getAttribute("data-interval"), 10) === raw);
+                    });
+                }
             }
         });
 
@@ -1095,14 +1309,6 @@
             }
 
             sendWindowCommand("drag");
-        });
-
-        app.root.addEventListener("change", function(event) {
-            const settingInput = event.target.closest("[data-setting]");
-            if (!settingInput) {
-                return;
-            }
-            updateSetting(settingInput.getAttribute("data-setting"), settingInput.checked);
         });
 
         if (app.isNative) {

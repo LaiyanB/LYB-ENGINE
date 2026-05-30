@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 100">
+  <defs>
+    <linearGradient id="vGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#FF4654"/>
+      <stop offset="100%" style="stop-color:#FF6B7A"/>
+    </linearGradient>
+  </defs>
+  <text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" font-family="Arial Black,Impact,sans-serif" font-weight="900" font-size="58" fill="url(#vGrad)" letter-spacing="1">VALORANT</text>
+</svg>

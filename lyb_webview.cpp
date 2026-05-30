@@ -39,6 +39,7 @@ struct AppSettings {
     bool steamSuppress = true;
     bool gameFullCore = true;
     bool disableEcores = false;
+    int scanInterval = 60;
 } g_Settings;
 
 struct EnvBackup {
@@ -528,6 +529,8 @@ wstring BuildStateJson() {
     json += BoolJson(g_Settings.gameFullCore);
     json += L",\"disableEcores\":";
     json += BoolJson(g_HasHybridCpu && g_Settings.disableEcores);
+    json += L",\"scanInterval\":";
+    json += to_wstring(g_Settings.scanInterval);
     json += L"}}}";
     return json;
 }
@@ -858,6 +861,10 @@ void HeartbeatThreadBody(unsigned long generation) {
     int secondsPassed = 0;
 
     while (g_IsRunning.load() && generation == g_RunGeneration.load()) {
+        // 读取当前扫描间隔（用户可调），平台扫描自动错开 1 秒以对齐颗粒度
+        const int gameInterval = g_Settings.scanInterval;
+        const int platformInterval = g_Settings.scanInterval + 1;
+
         if (IsTencentGame(g_SelectedGame) && g_Settings.weGameSuppress) {
             SuppressProcessTarget(L"browser.exe", lastCoreMask, IDLE_PRIORITY_CLASS);
             SuppressProcessTarget(L"WeGame.exe", lastCoreMask, IDLE_PRIORITY_CLASS);
@@ -865,7 +872,7 @@ void HeartbeatThreadBody(unsigned long generation) {
             SuppressProcessTarget(L"wegame_env.exe", lastCoreMask, IDLE_PRIORITY_CLASS);
         }
 
-        if (secondsPassed % 61 == 0) {
+        if (secondsPassed % platformInterval == 0) {
             if (g_Settings.edgeSuppress) {
                 SuppressProcessTarget(L"msedge.exe", lastCoreMask, IDLE_PRIORITY_CLASS);
             }
@@ -888,7 +895,7 @@ void HeartbeatThreadBody(unsigned long generation) {
             }
         }
 
-        if (secondsPassed % 60 == 0) {
+        if (secondsPassed % gameInterval == 0) {
             if (g_HasHybridCpu && g_Settings.disableEcores && g_PCoreAffinityMask != 0) {
                 if (g_SelectedGame == 0) SuppressProcessTarget(L"VALORANT-Win64-Shipping.exe", g_PCoreAffinityMask, HIGH_PRIORITY_CLASS);
                 if (g_SelectedGame == 1) SuppressProcessTarget(L"DeltaForce.exe", g_PCoreAffinityMask, HIGH_PRIORITY_CLASS);
@@ -927,7 +934,10 @@ void StartOptimizationGuard() {
     ExecuteOptimizations();
     g_IsRunning = true;
     const unsigned long generation = g_RunGeneration.fetch_add(1) + 1;
-    g_StatusMessage = L"守护已启动。游戏进程每 60 秒检查一次，平台进程每 61 秒检查一次。";
+    wchar_t statusBuf[128];
+    swprintf_s(statusBuf, L"守护已启动。游戏进程每 %d 秒检查一次，平台进程每 %d 秒检查一次。",
+               g_Settings.scanInterval, g_Settings.scanInterval + 1);
+    g_StatusMessage = statusBuf;
     g_HeartbeatThread = thread([generation]() { HeartbeatThreadBody(generation); });
     RequestStateSync();
 }
@@ -973,6 +983,7 @@ void ApplySetting(const wstring& key, bool enabled) {
     else if (key == L"steamSuppress") g_Settings.steamSuppress = enabled;
     else if (key == L"gameFullCore") g_Settings.gameFullCore = enabled;
     else if (key == L"disableEcores" && g_HasHybridCpu) g_Settings.disableEcores = enabled;
+    else if (key == L"scanInterval") { /* handled in HandleWebMessage */ }
 }
 
 void HandleWebMessage(const wstring& message) {
@@ -997,7 +1008,14 @@ void HandleWebMessage(const wstring& message) {
     }
 
     if (parts[0] == L"setting" && parts.size() >= 3) {
-        ApplySetting(parts[1], parts[2] == L"1");
+        if (parts[1] == L"scanInterval") {
+            const int val = _wtoi(parts[2].c_str());
+            if (val >= 5 && val <= 300) {
+                g_Settings.scanInterval = val;
+            }
+        } else {
+            ApplySetting(parts[1], parts[2] == L"1");
+        }
         RequestStateSync();
         return;
     }
