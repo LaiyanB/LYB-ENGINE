@@ -21,12 +21,12 @@
             --danger: #fb7185;
             --success: #34d399;
             --window-gap: 0px;
-            --shell-radius: clamp(20px, 2vw, 32px);
-            --card-radius: clamp(20px, 1.8vw, 28px);
-            --section-gap: clamp(14px, 1.4vw, 24px);
-            --page-pad: clamp(18px, 2vw, 30px);
-            --title-size: clamp(1.6rem, 2.4vw, 2.35rem);
-            --copy-size: clamp(0.84rem, 0.88vw, 0.96rem);
+            --shell-radius: clamp(18px, 1.6vw, 26px);
+            --card-radius: clamp(16px, 1.4vw, 22px);
+            --section-gap: clamp(10px, 1vw, 14px);
+            --page-pad: clamp(12px, 1.2vw, 18px);
+            --title-size: clamp(1.4rem, 2vw, 2rem);
+            --copy-size: clamp(0.76rem, 0.78vw, 0.85rem);
         }
 
         * { box-sizing: border-box; }
@@ -60,7 +60,6 @@
             inset: auto;
             border-radius: 999px;
             pointer-events: none;
-            filter: blur(10px);
             opacity: 0.5;
         }
 
@@ -110,7 +109,6 @@
                 linear-gradient(180deg, rgba(8, 16, 29, 0.96), rgba(3, 8, 18, 0.98)),
                 rgba(4, 11, 22, 0.96);
             box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
-            backdrop-filter: blur(24px);
             position: relative;
         }
 
@@ -125,7 +123,7 @@
             align-items: center;
             justify-content: space-between;
             gap: var(--section-gap);
-            padding: clamp(16px, 1.8vw, 24px) clamp(18px, 2vw, 30px);
+            padding: clamp(10px, 1.2vw, 14px) clamp(12px, 1.4vw, 18px);
             border-bottom: 1px solid rgba(148, 163, 184, 0.08);
             background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0));
         }
@@ -133,8 +131,8 @@
         .footer {
             border-bottom: 0;
             border-top: 1px solid rgba(148, 163, 184, 0.08);
-            padding-top: clamp(12px, 1.4vw, 16px);
-            padding-bottom: clamp(12px, 1.3vw, 16px);
+            padding-top: clamp(8px, 1vw, 12px);
+            padding-bottom: clamp(8px, 1vw, 12px);
         }
 
         .topbar {
@@ -160,7 +158,6 @@
             box-shadow:
                 0 14px 32px rgba(15, 23, 42, 0.32),
                 inset 0 1px 0 rgba(255, 255, 255, 0.18);
-            animation: pulse 2.2s ease-in-out infinite;
             flex: 0 0 auto;
         }
 
@@ -268,16 +265,16 @@
             background:
                 linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0)),
                 rgba(5, 12, 24, 0.74);
-            padding: clamp(18px, 1.8vw, 24px);
+            padding: clamp(12px, 1.2vw, 16px);
             box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
         }
 
         .card-title {
-            margin: 0 0 18px;
+            margin: 0 0 10px;
             display: flex;
             align-items: center;
             gap: 8px;
-            font-size: clamp(11px, 0.7vw, 13px);
+            font-size: clamp(10px, 0.62vw, 12px);
             font-weight: 900;
             letter-spacing: 0.24em;
             text-transform: uppercase;
@@ -287,19 +284,89 @@
         .hardware-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
-            gap: 12px;
+            gap: 10px;
         }
 
         .mini-card {
-            padding: 14px;
-            border-radius: 18px;
+            padding: 10px 12px;
+            border-radius: 14px;
             border: 1px solid rgba(148, 163, 184, 0.08);
             background: rgba(10, 19, 34, 0.82);
         }
 
+        /* 硬件扫描卡片：拉伸填满列高，内容饱满 */
+        .hardware-card {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+        }
+
+        .hw-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 0;
+        }
+
+        .hw-row + .hw-row {
+            border-top: 1px solid rgba(148, 163, 184, 0.08);
+        }
+
+        .hw-icon {
+            width: 38px;
+            height: 38px;
+            border-radius: 12px;
+            display: grid;
+            place-items: center;
+            background: rgba(56, 189, 248, 0.1);
+            color: var(--accent-2);
+            flex: 0 0 auto;
+        }
+
+        .hw-row .label {
+            font-size: 0.68rem;
+        }
+
+        .hw-row .value {
+            margin-top: 4px;
+            font-size: clamp(13px, 0.9vw, 15px);
+            line-height: 1.45;
+        }
+
+        .hw-status {
+            margin-top: auto;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            padding-top: 12px;
+            border-top: 1px solid rgba(148, 163, 184, 0.08);
+            font-size: 0.68rem;
+            font-weight: 800;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            color: var(--muted-2);
+        }
+
+        .hw-status .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 999px;
+            background: var(--success);
+            display: inline-block;
+            margin-right: 6px;
+            box-shadow: 0 0 8px rgba(52, 211, 153, 0.6);
+        }
+
+        .hw-status .dot.off {
+            background: var(--muted-2);
+            box-shadow: none;
+        }
+
         .label {
             margin: 0;
-            font-size: clamp(9px, 0.56vw, 11px);
+            font-size: clamp(8px, 0.5vw, 10px);
             font-weight: 800;
             letter-spacing: 0.26em;
             text-transform: uppercase;
@@ -307,8 +374,8 @@
         }
 
         .value {
-            margin: 8px 0 0;
-            font-size: clamp(14px, 1vw, 17px);
+            margin: 6px 0 0;
+            font-size: clamp(13px, 0.9vw, 15px);
             font-weight: 800;
             color: white;
             word-break: break-word;
@@ -318,6 +385,9 @@
             min-height: 0;
             overflow: auto;
             padding-right: 6px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
         }
 
         .main-scroll::-webkit-scrollbar {
@@ -332,19 +402,27 @@
         .options-grid {
             display: grid;
             grid-template-columns: repeat(3, minmax(0, 1fr));
-            gap: 14px;
+            gap: 10px;
         }
 
         .options-grid.two {
             grid-template-columns: repeat(2, minmax(0, 1fr));
         }
 
+        .options-grid.three {
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+
+        .options-grid.four {
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+        }
+
         .option {
             display: flex;
             align-items: flex-start;
-            gap: 12px;
-            padding: 16px;
-            border-radius: 22px;
+            gap: 10px;
+            padding: 10px 12px;
+            border-radius: 16px;
             border: 1px solid rgba(148, 163, 184, 0.1);
             background: rgba(9, 17, 31, 0.72);
             transition: 0.2s ease;
@@ -362,38 +440,38 @@
         }
 
         .option input {
-            margin-top: 3px;
-            width: 16px;
-            height: 16px;
+            margin-top: 2px;
+            width: 15px;
+            height: 15px;
             accent-color: var(--accent);
         }
 
         .option h4 {
             margin: 0;
-            font-size: clamp(14px, 0.98vw, 16px);
+            font-size: clamp(12px, 0.85vw, 13px);
             font-weight: 800;
             color: white;
         }
 
         .option p {
-            margin: 6px 0 0;
-            font-size: var(--copy-size);
-            line-height: 1.55;
+            margin: 3px 0 0;
+            font-size: 0.72rem;
+            line-height: 1.45;
             color: var(--muted);
         }
 
         .actions {
             display: flex;
             justify-content: flex-end;
-            gap: 14px;
-            margin-top: 18px;
+            gap: 12px;
+            margin-top: 12px;
             flex-wrap: wrap;
         }
 
         .btn {
-            padding: 14px 22px;
-            border-radius: 18px;
-            font-size: clamp(11px, 0.7vw, 13px);
+            padding: 10px 16px;
+            border-radius: 14px;
+            font-size: clamp(10px, 0.62vw, 12px);
             font-weight: 900;
             letter-spacing: 0.2em;
             text-transform: uppercase;
@@ -425,31 +503,10 @@
         .step-two {
             position: relative;
             padding: 0;
-            background: #01050b;
-        }
-
-        .step-two-bg,
-        .step-three-bg {
-            position: absolute;
-            inset: 0;
-            background-image: url("84f067f8b35e833c4a0dd47553dda6f2.jpg");
-            background-position: center;
-            background-size: cover;
-        }
-
-        .step-two-bg::after {
-            content: "";
-            position: absolute;
-            inset: 0;
             background:
-                linear-gradient(180deg, rgba(2, 6, 12, 0.12), rgba(2, 6, 12, 0.48), rgba(2, 6, 12, 0.96)),
-                radial-gradient(circle at top right, rgba(56, 189, 248, 0.18), transparent 28%);
-        }
-
-        .step-three-bg {
-            opacity: 0.22;
-            filter: blur(26px);
-            transform: scale(1.08);
+                radial-gradient(circle at top right, rgba(56, 189, 248, 0.12), transparent 30%),
+                radial-gradient(circle at bottom left, rgba(245, 158, 11, 0.1), transparent 26%),
+                linear-gradient(170deg, #01050b 0%, #04101d 55%, #020810 100%);
         }
 
         .step-two-inner,
@@ -595,15 +652,15 @@
             height: 100%;
             display: flex;
             flex-direction: column;
-            gap: 20px;
+            gap: 12px;
         }
 
         .profile-header {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            gap: 20px;
-            padding-bottom: 18px;
+            gap: 16px;
+            padding-bottom: 10px;
             border-bottom: 1px solid rgba(148, 163, 184, 0.08);
         }
 
@@ -611,12 +668,12 @@
             margin: auto;
             width: 100%;
             max-width: 1040px;
-            border-radius: 32px;
+            border-radius: 22px;
             border: 1px solid rgba(148, 163, 184, 0.1);
             background:
                 linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0)),
                 rgba(4, 12, 23, 0.76);
-            padding: clamp(18px, 1.8vw, 26px);
+            padding: clamp(12px, 1.2vw, 16px);
         }
 
         .footer-left,
@@ -684,7 +741,6 @@
 
         .cta {
             box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.28);
-            animation: pulse 2.2s ease-in-out infinite;
         }
 
         .icon {
@@ -694,18 +750,15 @@
             vertical-align: middle;
         }
 
-        @keyframes pulse {
-            0%, 100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.24); }
-            50% { box-shadow: 0 0 0 14px rgba(56, 189, 248, 0.03); }
-        }
-
         @media (max-width: 1280px) {
             .grid-two {
                 grid-template-columns: minmax(260px, 0.92fr) minmax(0, 1.2fr);
             }
 
             .options-grid,
-            .options-grid.two {
+            .options-grid.two,
+            .options-grid.three,
+            .options-grid.four {
                 grid-template-columns: 1fr 1fr;
             }
         }
@@ -718,6 +771,67 @@
 
             .step-two .target-grid {
                 padding: 0 clamp(8px, 0.8vw, 14px);
+            }
+        }
+
+        /* 中等高度屏（1080p 等）：进一步压缩让三步内容一屏放下 */
+        @media (max-height: 900px) {
+            .profile-header {
+                padding-bottom: 8px;
+            }
+
+            .profile-header h2 {
+                font-size: 22px !important;
+                margin-top: 4px !important;
+            }
+
+            .profile-card {
+                padding: 10px 12px;
+            }
+
+            .card-title {
+                margin-bottom: 8px;
+            }
+
+            .option {
+                padding: 8px 10px;
+            }
+
+            .option h4 {
+                font-size: 12px;
+            }
+
+            .option p {
+                font-size: 0.68rem;
+                margin-top: 2px;
+            }
+
+            .scan-interval-card .card-subtitle,
+            .custom-card .card-subtitle {
+                margin: 2px 0 8px;
+                font-size: 0.78rem;
+            }
+
+            .interval-chip {
+                padding: 3px 8px;
+                font-size: 0.72rem;
+            }
+
+            .interval-hint {
+                margin: 8px 0 0;
+                font-size: 0.76rem;
+            }
+
+            .custom-item {
+                padding: 6px 10px;
+            }
+
+            .step-three-layout {
+                gap: 8px;
+            }
+
+            .step-footer {
+                padding-top: 0;
             }
         }
 
@@ -740,7 +854,9 @@
             .grid-two,
             .target-grid,
             .options-grid,
-            .options-grid.two {
+            .options-grid.two,
+            .options-grid.three,
+            .options-grid.four {
                 grid-template-columns: 1fr;
             }
 
@@ -807,7 +923,7 @@
 
         /* ── 扫描间隔设置（对齐颗粒度） ── */
         .scan-interval-card {
-            margin-top: var(--section-gap);
+            margin-top: 0;
         }
 
         .scan-interval-card .card-subtitle {
@@ -831,12 +947,12 @@
         }
 
         .interval-chip {
-            padding: 6px 14px;
+            padding: 4px 10px;
             border-radius: 999px;
             border: 1px solid var(--border);
             background: var(--panel-3);
             color: var(--text);
-            font-size: 0.82rem;
+            font-size: 0.76rem;
             font-weight: 600;
             cursor: pointer;
             transition: all 0.15s;
@@ -901,6 +1017,159 @@
             color: var(--accent);
             font-weight: 700;
         }
+
+        /* ── 优化方案（预设） ── */
+        .preset-hint {
+            margin: 0 0 14px;
+            font-size: 0.85rem;
+            color: var(--muted);
+            line-height: 1.5;
+        }
+
+        .preset-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 8px;
+        }
+
+        .preset-card {
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+            padding: 10px 12px;
+            border-radius: 14px;
+            border: 1px solid var(--border);
+            background: var(--panel-3);
+            color: var(--text);
+            text-align: left;
+            transition: all 0.18s;
+        }
+
+        .preset-card:hover {
+            border-color: var(--accent);
+            background: rgba(245, 158, 11, 0.1);
+            transform: translateY(-1px);
+        }
+
+        .preset-card.active {
+            border-color: var(--accent);
+            background: rgba(245, 158, 11, 0.18);
+            box-shadow: 0 0 14px rgba(245, 158, 11, 0.22);
+        }
+
+        .preset-name {
+            font-size: 0.88rem;
+            font-weight: 800;
+            color: white;
+        }
+
+        .preset-card.active .preset-name {
+            color: var(--accent);
+        }
+
+        .preset-desc {
+            font-size: 0.64rem;
+            color: var(--muted-2);
+            line-height: 1.35;
+        }
+
+        /* ── 自定义进程压制 ── */
+        .custom-card {
+            margin-top: 0;
+        }
+
+        .custom-add-row {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .custom-input {
+            flex: 1;
+            min-width: 160px;
+            padding: 10px 14px;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            background: var(--panel-2);
+            color: var(--text);
+            font-size: 0.9rem;
+            outline: none;
+            transition: border-color 0.15s;
+        }
+
+        .custom-input:focus {
+            border-color: var(--accent-2);
+        }
+
+        .custom-priority {
+            padding: 10px 12px;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            background: var(--panel-2);
+            color: var(--text);
+            font-size: 0.9rem;
+            outline: none;
+        }
+
+        .custom-list {
+            list-style: none;
+            margin: 14px 0 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .custom-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 12px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            background: var(--panel-2);
+        }
+
+        .custom-item-name {
+            flex: 1;
+            font-weight: 700;
+            font-size: 0.9rem;
+            color: white;
+            word-break: break-all;
+        }
+
+        .custom-item-pri {
+            font-size: 0.72rem;
+            font-weight: 800;
+            letter-spacing: 0.06em;
+            padding: 4px 10px;
+            border-radius: 999px;
+            background: rgba(56, 189, 248, 0.14);
+            color: #bae6fd;
+        }
+
+        .custom-item-del {
+            width: 26px;
+            height: 26px;
+            border-radius: 8px;
+            display: grid;
+            place-items: center;
+            background: rgba(251, 113, 133, 0.12);
+            color: var(--danger);
+            transition: 0.15s;
+        }
+
+        .custom-item-del:hover {
+            background: rgba(251, 113, 133, 0.26);
+            color: #fecdd3;
+        }
+
+        .custom-empty {
+            margin: 14px 0 0;
+            font-size: 0.85rem;
+            color: var(--muted-2);
+        }
     </style>
 </head>
 <body>
@@ -952,13 +1221,57 @@
                 sysVsync: true,
                 edgeSuppress: true,
                 disableHpet: false,
+                gameDvr: true,
+                gameMode: true,
+                qosLimit: false,
+                timerRes: true,
+                systemAnim: false,
                 aceSuppress: true,
                 weGameSuppress: true,
                 gameAvoid: true,
                 steamSuppress: true,
                 gameFullCore: true,
                 disableEcores: false,
-                scanInterval: 60
+                avoidLastCore: true,
+                scanInterval: 60,
+                customTargets: []
+            }
+        };
+
+        // 预设方案：一键套用整套配置
+        const presets = {
+            balanced: {
+                label: "均衡",
+                desc: "常用优化，兼顾稳定与性能",
+                settings: {
+                    sysPower: true, sysVbs: true, sysVsync: true, edgeSuppress: true, disableHpet: true,
+                    gameDvr: true, gameMode: true, qosLimit: false, timerRes: true, systemAnim: false,
+                    aceSuppress: true, weGameSuppress: true, gameAvoid: true,
+                    steamSuppress: true, gameFullCore: true, disableEcores: false, avoidLastCore: true,
+                    scanInterval: 60
+                }
+            },
+            aggressive: {
+                label: "激进",
+                desc: "全力压榨性能，追求极致帧率",
+                settings: {
+                    sysPower: true, sysVbs: true, sysVsync: true, edgeSuppress: true, disableHpet: true,
+                    gameDvr: true, gameMode: true, qosLimit: true, timerRes: true, systemAnim: true,
+                    aceSuppress: true, weGameSuppress: true, gameAvoid: true,
+                    steamSuppress: true, gameFullCore: true, disableEcores: true, avoidLastCore: true,
+                    scanInterval: 10
+                }
+            },
+            conservative: {
+                label: "保守",
+                desc: "最小干预，优先稳定性",
+                settings: {
+                    sysPower: true, sysVbs: false, sysVsync: true, edgeSuppress: false, disableHpet: false,
+                    gameDvr: false, gameMode: false, qosLimit: false, timerRes: false, systemAnim: false,
+                    aceSuppress: false, weGameSuppress: false, gameAvoid: true,
+                    steamSuppress: false, gameFullCore: true, disableEcores: false, avoidLastCore: false,
+                    scanInterval: 120
+                }
             }
         };
 
@@ -966,7 +1279,8 @@
             root: document.getElementById("root"),
             step: 1,
             isNative: Boolean(window.chrome && window.chrome.webview),
-            state: JSON.parse(JSON.stringify(defaultState))
+            state: JSON.parse(JSON.stringify(defaultState)),
+            profile: "balanced"
         };
 
         function icon(name, size) {
@@ -1016,6 +1330,7 @@
             }
 
             app.state.settings[key] = enabled;
+            app.profile = "custom";
             sendMessage("setting|" + key + "|" + (enabled ? "1" : "0"));
             render();
         }
@@ -1025,7 +1340,36 @@
             if (isNaN(num) || num < 5) num = 5;
             if (num > 300) num = 300;
             app.state.settings[key] = num;
+            app.profile = "custom";
             sendMessage("setting|" + key + "|" + num);
+            render();
+        }
+
+        // 一键套用预设方案
+        function applyPreset(name) {
+            const preset = presets[name];
+            if (!preset) {
+                return;
+            }
+
+            Object.keys(preset.settings).forEach(function(key) {
+                const value = preset.settings[key];
+                if (key === "scanInterval") {
+                    app.state.settings[key] = value;
+                    sendMessage("setting|" + key + "|" + value);
+                    return;
+                }
+                if (key === "disableHpet" && !app.state.hardware.hpetAvailable) {
+                    return;
+                }
+                if (key === "disableEcores" && !app.state.hardware.hybrid) {
+                    return;
+                }
+                app.state.settings[key] = value;
+                sendMessage("setting|" + key + "|" + (value ? "1" : "0"));
+            });
+
+            app.profile = name;
             render();
         }
 
@@ -1084,27 +1428,63 @@
                 ["sysVbs", "关闭 VBS", "释放虚拟化安全占用的 CPU 资源。", false],
                 ["sysVsync", "关闭全局垂直同步", "降低竞技游戏中的输入延迟。", false],
                 ["edgeSuppress", "限制 Edge 后台", "避免 Edge 在后台占用额外的内存和 CPU。", false],
-                ["disableHpet", "关闭 HPET", app.state.hardware.hpetAvailable ? "在 AMD 平台上通常更适合降低中断延迟。" : "Intel 平台一般不需要改这个选项。", !app.state.hardware.hpetAvailable]
+                ["disableHpet", "关闭 HPET", app.state.hardware.hpetAvailable ? "在 AMD 平台上通常更适合降低中断延迟。" : "Intel 平台一般不需要改这个选项。", !app.state.hardware.hpetAvailable],
+                ["gameDvr", "禁用 GameDVR 录制", "关闭 Xbox 后台录制与截图，减少后台开销。", false],
+                ["gameMode", "开启系统游戏模式", "让系统优先为游戏分配资源。", false],
+                ["qosLimit", "禁用 QoS 带宽预留", "释放默认预留的 20% 网络带宽（需管理员权限）。", false],
+                ["timerRes", "高精度计时器", "守护期间将系统计时器精度提升到 1ms。", false],
+                ["systemAnim", "关闭系统动画", "减少菜单/窗口动画的视觉开销。", false]
             ];
+
+            const presetCards = Object.keys(presets).map(function(name) {
+                const preset = presets[name];
+                return [
+                    '<button class="preset-card', app.profile === name ? " active" : "", '" data-preset="', name, '">',
+                    '<span class="preset-name">', preset.label, "</span>",
+                    '<span class="preset-desc">', preset.desc, "</span>",
+                    "</button>"
+                ].join("");
+            }).join("");
+
+            const profileLabel = presets[app.profile] ? presets[app.profile].label : "自定义";
 
             return [
                 '<div class="page"><div class="grid-two">',
                 '<div class="column">',
-                '<section class="card">',
+                '<section class="card hardware-card">',
                 '<h3 class="card-title">', icon("activity", 16), " 硬件扫描</h3>",
-                '<div><p class="label">CPU</p><p class="value">', escapeHtml(app.state.hardware.cpu), "</p></div>",
-                '<div style="margin-top:16px"><p class="label">GPU</p><p class="value">', escapeHtml(app.state.hardware.gpu), "</p></div>",
-                '<div class="hardware-grid" style="margin-top:16px">',
+                '<div class="hw-row">',
+                '<div class="hw-icon">', icon("cpu", 20), "</div>",
+                '<div style="min-width:0"><p class="label">处理器</p><p class="value">', escapeHtml(app.state.hardware.cpu), "</p></div>",
+                "</div>",
+                '<div class="hw-row">',
+                '<div class="hw-icon">', icon("monitor", 20), "</div>",
+                '<div style="min-width:0"><p class="label">显卡</p><p class="value">', escapeHtml(app.state.hardware.gpu), "</p></div>",
+                "</div>",
+                '<div class="hardware-grid" style="margin-top:4px">',
                 '<div class="mini-card"><p class="label">内存频率</p><p class="value">', escapeHtml(app.state.hardware.memoryLabel), "</p></div>",
                 '<div class="mini-card"><p class="label">大小核</p><p class="value">', app.state.hardware.hybrid ? "是" : "否", "</p></div>",
-                "</div></section>",
-                '<section class="card info-note">当前界面已经启用每显示器 DPI 感知和自适应间距，1080p 到高缩放桌面都能保持更清晰的显示效果。</section>',
+                "</div>",
+                '<div class="hw-status">',
+                '<span>优化方案 · ', escapeHtml(profileLabel), "</span>",
+                '<span><span class="dot', app.state.running ? "" : " off", '"></span>', app.state.running ? "守护运行中" : "守护未启动", "</span>",
+                "</div>",
+                "</section>",
                 "</div>",
                 '<div class="column">',
                 '<div class="header-stack"><p class="eyebrow">步骤 01</p><h2>全局系统优化</h2></div>',
-                '<div class="main-scroll"><div class="options-grid">',
+                '<div class="main-scroll">',
+                '<section class="card">',
+                '<h3 class="card-title">', icon("zap", 16), " 优化方案</h3>",
+                '<p class="preset-hint">一键套用，之后仍可手动微调。</p>',
+                '<div class="preset-grid">', presetCards, "</div>",
+                "</section>",
+                '<section class="card">',
+                '<h3 class="card-title">', icon("activity", 16), " 手动微调</h3>",
+                '<div class="options-grid four">',
                 options.map(function(item) { return optionCard(item[0], item[1], item[2], item[3]); }).join(""),
-                '</div></div>',
+                '</div></section>',
+                "</div>",
                 '<div class="actions"><button class="btn btn-primary" data-step="2">下一步：选择游戏 ', icon("chevronRight", 18), "</button></div>",
                 "</div></div></div>"
             ].join("");
@@ -1132,7 +1512,6 @@
 
             return [
                 '<div class="page step-two">',
-                '<div class="step-two-bg"></div>',
                 '<div class="step-two-inner">',
                 '<div class="header-stack"><p class="eyebrow">步骤 02</p><h2 class="target-title">选择目标游戏</h2><div class="accent-line"></div></div>',
                 '<div class="target-grid">', targets, "</div>",
@@ -1149,20 +1528,36 @@
                     ["aceSuppress", "ACE 进程压制", "把 ACE 相关进程尽量压到最不重要的核心上。", false],
                     ["weGameSuppress", "WeGame 压制", "把 browser.exe 和 wegame.exe 压到最后一个核心，并降低优先级。", false],
                     ["gameAvoid", "游戏进程优先", "提升主游戏进程优先级，并尽量避开被压制的核心。", false],
+                    ["avoidLastCore", "游戏避开最后一核", "让游戏进程不使用最后一个核心，为压制进程留出隔离区。", false],
                     ["disableEcores", "减少 E 核干扰", app.state.hardware.hybrid ? "在大小核 CPU 上尽量把游戏固定到性能核心。" : "当前 CPU 不是大小核架构，不需要开启。", !app.state.hardware.hybrid]
                 ]
                 : [
                     ["steamSuppress", "Steam 后台压制", "降低 Steam 与 WebHelper 后台进程的干扰。", false],
                     ["gameFullCore", "游戏进程优先", "提升主游戏进程优先级，并尽量避开被压制的核心。", false],
+                    ["avoidLastCore", "游戏避开最后一核", "让游戏进程不使用最后一个核心，为压制进程留出隔离区。", false],
                     ["disableEcores", "减少 E 核干扰", app.state.hardware.hybrid ? "在大小核 CPU 上尽量把游戏固定到性能核心。" : "当前 CPU 不是大小核架构，不需要开启。", !app.state.hardware.hybrid]
                 ];
 
             const scanPresets = [10, 15, 20, 30, 45, 60, 90, 120];
             const curInterval = Number(app.state.settings.scanInterval) || 60;
 
+            const customTargets = app.state.settings.customTargets || [];
+            const customListHtml = customTargets.length
+                ? '<ul class="custom-list">' + customTargets.map(function(target, index) {
+                    const priorityLabels = ["空闲", "低于正常", "正常"];
+                    const priorityLabel = priorityLabels[target.priority] || "空闲";
+                    return [
+                        '<li class="custom-item">',
+                        '<span class="custom-item-name">', escapeHtml(target.name), "</span>",
+                        '<span class="custom-item-pri">', priorityLabel, "</span>",
+                        '<button class="custom-item-del" type="button" data-custom-remove="', index, '" aria-label="删除">', icon("close", 12), "</button>",
+                        "</li>"
+                    ].join("");
+                }).join("") + "</ul>"
+                : '<p class="custom-empty">还没有自定义进程，添加一个试试（如 chrome.exe）。</p>';
+
             return [
                 '<div class="page">',
-                '<div class="step-three-bg"></div>',
                 '<div class="step-three-inner"><div class="step-three-layout">',
                 '<div class="profile-header">',
                 '<div class="brand"><div class="brand-badge">', icon("zap", 22), '</div><div><p class="eyebrow">游戏配置</p><h2 style="margin:8px 0 0;font-size:30px;font-weight:900;">', gameNames[app.state.selectedGame], "</h2></div></div>",
@@ -1170,7 +1565,19 @@
                 "</div>",
                 '<div class="main-scroll"><section class="profile-card">',
                 '<h3 class="card-title">', icon("shield", 22), " 游戏专属进程控制</h3>",
-                '<div class="options-grid two">', options.map(function(item) { return optionCard(item[0], item[1], item[2], item[3]); }).join(""), "</div>",
+                '<div class="options-grid three">', options.map(function(item) { return optionCard(item[0], item[1], item[2], item[3]); }).join(""), "</div>",
+                "</section>",
+                '<section class="profile-card custom-card">',
+                '<h3 class="card-title">', icon("zap", 18), " 自定义进程压制</h3>",
+                '<p class="card-subtitle">把任意后台进程压到最后一个核心并降低优先级，例如直播软件或通讯工具。</p>',
+                '<div class="custom-add-row">',
+                '<input type="text" class="custom-input" data-custom-name placeholder="进程名，如 chrome.exe" maxlength="64" />',
+                '<select class="custom-priority" data-custom-priority>',
+                '<option value="0">空闲</option><option value="1">低于正常</option><option value="2">正常</option>',
+                "</select>",
+                '<button class="btn btn-secondary" type="button" data-custom-add>添加</button>',
+                "</div>",
+                customListHtml,
                 "</section>",
                 '<section class="profile-card scan-interval-card">',
                 '<h3 class="card-title">', icon("activity", 18), " 扫描间隔（对齐颗粒度）</h3>",
@@ -1234,6 +1641,12 @@
                 return;
             }
 
+            const presetTarget = event.target.closest("[data-preset]");
+            if (presetTarget) {
+                applyPreset(presetTarget.getAttribute("data-preset"));
+                return;
+            }
+
             const stepTarget = event.target.closest("[data-step]");
             if (stepTarget) {
                 app.step = Number(stepTarget.getAttribute("data-step"));
@@ -1250,6 +1663,52 @@
             const actionTarget = event.target.closest("[data-action]");
             if (actionTarget && actionTarget.getAttribute("data-action") === "execute") {
                 toggleExecution();
+                return;
+            }
+
+            const customAddTarget = event.target.closest("[data-custom-add]");
+            if (customAddTarget) {
+                const nameInput = app.root.querySelector("[data-custom-name]");
+                const prioritySelect = app.root.querySelector("[data-custom-priority]");
+                const name = (nameInput.value || "").trim();
+                if (!name) {
+                    nameInput.focus();
+                    return;
+                }
+                if (name.length > 64) {
+                    nameInput.value = name.slice(0, 64);
+                }
+                const priority = parseInt(prioritySelect.value, 10) || 0;
+                const targets = app.state.settings.customTargets || (app.state.settings.customTargets = []);
+                const existing = targets.find(function(t) {
+                    return t.name.toLowerCase() === name.toLowerCase();
+                });
+                if (existing) {
+                    existing.priority = priority;
+                } else {
+                    if (targets.length >= 32) {
+                        return;
+                    }
+                    targets.push({ name: name, priority: priority });
+                }
+                app.profile = "custom";
+                sendMessage("custom|add|" + name + "|" + priority);
+                nameInput.value = "";
+                render();
+                return;
+            }
+
+            const customRemoveTarget = event.target.closest("[data-custom-remove]");
+            if (customRemoveTarget) {
+                const index = parseInt(customRemoveTarget.getAttribute("data-custom-remove"), 10);
+                const targets = app.state.settings.customTargets || [];
+                if (index >= 0 && index < targets.length) {
+                    const removed = targets[index];
+                    app.state.settings.customTargets = targets.filter(function(_, i) { return i !== index; });
+                    app.profile = "custom";
+                    sendMessage("custom|remove|" + removed.name);
+                    render();
+                }
                 return;
             }
 
