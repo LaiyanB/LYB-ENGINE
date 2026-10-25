@@ -3,6 +3,8 @@
 #include <windows.h>
 #include <windowsx.h>
 #include <wrl.h>
+#include <mmsystem.h>
+#include <shellapi.h>
 
 #include "packages/webview2/build/native/include/WebView2.h"
 
@@ -23,29 +25,70 @@ using namespace std;
 using Microsoft::WRL::ComPtr;
 
 constexpr UINT WM_APP_SYNC_STATE = WM_APP + 1;
+constexpr UINT WM_APP_RESUME_WEBVIEW = WM_APP + 2;
+constexpr UINT WM_APP_TRAYICON = WM_APP + 3;
 constexpr LONG kMinimumWindowWidth = 960;
 constexpr LONG kMinimumWindowHeight = 680;
 constexpr int kWindowCornerRadiusDip = 30;
+constexpr UINT kTrayIconId = 1;
+constexpr int kTrayMenuShow = 1;
+constexpr int kTrayMenuToggleGuard = 2;
+constexpr int kTrayMenuExit = 3;
 
-struct AppSettings {
-    bool sysPower = true;
-    bool sysVbs = true;
-    bool sysVsync = true;
-    bool edgeSuppress = true;
-    bool disableHpet = true;
+// 每游戏的独立配置（按 g_SelectedGame 索引 0..3）
+struct GameProfile {
     bool aceSuppress = true;
     bool weGameSuppress = true;
     bool gameAvoid = true;
     bool steamSuppress = true;
     bool gameFullCore = true;
     bool disableEcores = false;
+    bool avoidLastCore = true;  // 游戏进程是否避开最后一个核心
     int scanInterval = 60;
+};
+
+// 自定义进程压制项：name 为进程名（如 chrome.exe），priority 0=空闲 1=低于正常 2=正常
+struct CustomTarget {
+    wstring name;
+    int priority = 0;
+};
+
+struct AppSettings {
+    // ── 全局系统优化（步骤 1） ──
+    bool sysPower = true;
+    bool sysVbs = true;
+    bool sysVsync = true;
+    bool edgeSuppress = true;
+    bool disableHpet = true;
+    bool gameDvr = true;      // 禁用 GameDVR 后台录制
+    bool gameMode = true;     // 开启系统游戏模式
+    bool qosLimit = false;    // 禁用 QoS 带宽预留（需管理员）
+    bool timerRes = true;     // 高精度计时器（1ms）
+    bool systemAnim = false;  // 关闭系统动画
+
+    // ── 每游戏配置 ──
+    GameProfile profiles[4];
+
+    // ── 自定义进程压制列表 ──
+    vector<CustomTarget> customTargets;
 } g_Settings;
+
+mutex g_CustomTargetsMutex;
 
 struct EnvBackup {
     DWORD vbsState = 1;
     DWORD hwSchMode = 1;
     DWORD vsyncStateNvidia[5] = {1, 1, 1, 1, 1};
+    DWORD gameDvrEnabled = 1;
+    DWORD appCaptureEnabled = 1;
+    DWORD gameModeEnabled = 1;
+    DWORD qosNonBestEffort = 0xFFFFFFFF;
+    BOOL animClientArea = TRUE;
+    BOOL animMenu = TRUE;
+    BOOL animCombo = TRUE;
+    BOOL animListSmooth = TRUE;
+    BOOL animTooltip = TRUE;
+    BOOL animTooltipFade = TRUE;
 } g_Backup;
 
 struct ProcessBackupInfo {
@@ -64,8 +107,12 @@ thread g_HeartbeatThread;
 
 ComPtr<ICoreWebView2Controller> g_WebViewController;
 ComPtr<ICoreWebView2> g_WebView;
+ComPtr<ICoreWebView2_12> g_WebView12;
 bool g_PageReady = false;
 bool g_WindowMaximized = false;
+atomic<bool> g_WebViewSuspended{false};
+atomic<bool> g_WebViewSuspendPending{false};
+atomic<bool> g_WebViewResumeRequested{false};
 
 string g_CpuName;
 string g_GpuName;
@@ -78,7 +125,18 @@ int g_SelectedGame = 0;
 bool g_HasHybridCpu = false;
 DWORD_PTR g_PCoreAffinityMask = 0;
 
+// ── 配置持久化 / 托盘 / 退出状态 ──
+wstring g_ConfigPath;          // 配置文件（lyb_config.ini）
+wstring g_BackupPath;          // 环境备份文件（lyb_env_backup.ini）
+bool g_ExitRequested = false;  // 用户明确要求退出（托盘菜单），此时关闭窗口才真正退出
+bool g_TrayIconAdded = false;
+
 void RequestStateSync();
+void ResumeWebViewIfSuspended();
+void RestoreEnvironment();
+void StartOptimizationGuard();
+void StopOptimizationGuard();
+bool SetRegDWORD(HKEY rootKey, LPCWSTR subKey, LPCWSTR valueName, DWORD data);
 
 string TrimCopy(const string& value) {
     const size_t start = value.find_first_not_of(" \t\r\n");
@@ -87,6 +145,16 @@ string TrimCopy(const string& value) {
     }
 
     const size_t end = value.find_last_not_of(" \t\r\n");
+    return value.substr(start, end - start + 1);
+}
+
+wstring TrimCopyW(const wstring& value) {
+    const size_t start = value.find_first_not_of(L" \t\r\n");
+    if (start == wstring::npos) {
+        return L"";
+    }
+
+    const size_t end = value.find_last_not_of(L" \t\r\n");
     return value.substr(start, end - start + 1);
 }
 
@@ -112,6 +180,427 @@ wstring GetModuleDirectory() {
     wstring path(buffer);
     const size_t slash = path.find_last_of(L"\\/");
     return slash == wstring::npos ? L"." : path.substr(0, slash);
+}
+
+// ── 配置持久化 ──
+// 配置文件为 UTF-8 文本，逐行 "key=value"。key 采用扁平化命名：
+//   global.xxx          → 全局系统优化开关
+//   profile{N}.xxx      → 第 N 个游戏（0..3）的配置
+//   custom.count        → 自定义进程数量
+//   custom.{i}.name     → 自定义进程名
+//   custom.{i}.priority → 自定义进程优先级
+//   window.maximized    → 窗口是否最大化
+//   window.lastGame     → 上次选择的游戏
+void SaveSettingsToFile() {
+    if (g_ConfigPath.empty()) {
+        return;
+    }
+
+    wstringstream stream;
+    stream << L"global.sysPower=" << (g_Settings.sysPower ? L"1" : L"0") << L"\n";
+    stream << L"global.sysVbs=" << (g_Settings.sysVbs ? L"1" : L"0") << L"\n";
+    stream << L"global.sysVsync=" << (g_Settings.sysVsync ? L"1" : L"0") << L"\n";
+    stream << L"global.edgeSuppress=" << (g_Settings.edgeSuppress ? L"1" : L"0") << L"\n";
+    stream << L"global.disableHpet=" << (g_Settings.disableHpet ? L"1" : L"0") << L"\n";
+    stream << L"global.gameDvr=" << (g_Settings.gameDvr ? L"1" : L"0") << L"\n";
+    stream << L"global.gameMode=" << (g_Settings.gameMode ? L"1" : L"0") << L"\n";
+    stream << L"global.qosLimit=" << (g_Settings.qosLimit ? L"1" : L"0") << L"\n";
+    stream << L"global.timerRes=" << (g_Settings.timerRes ? L"1" : L"0") << L"\n";
+    stream << L"global.systemAnim=" << (g_Settings.systemAnim ? L"1" : L"0") << L"\n";
+    for (int i = 0; i < 4; ++i) {
+        const GameProfile& profile = g_Settings.profiles[i];
+        stream << L"profile" << i << L".aceSuppress=" << (profile.aceSuppress ? L"1" : L"0") << L"\n";
+        stream << L"profile" << i << L".weGameSuppress=" << (profile.weGameSuppress ? L"1" : L"0") << L"\n";
+        stream << L"profile" << i << L".gameAvoid=" << (profile.gameAvoid ? L"1" : L"0") << L"\n";
+        stream << L"profile" << i << L".steamSuppress=" << (profile.steamSuppress ? L"1" : L"0") << L"\n";
+        stream << L"profile" << i << L".gameFullCore=" << (profile.gameFullCore ? L"1" : L"0") << L"\n";
+        stream << L"profile" << i << L".disableEcores=" << (profile.disableEcores ? L"1" : L"0") << L"\n";
+        stream << L"profile" << i << L".avoidLastCore=" << (profile.avoidLastCore ? L"1" : L"0") << L"\n";
+        stream << L"profile" << i << L".scanInterval=" << profile.scanInterval << L"\n";
+    }
+    stream << L"window.maximized=" << (g_WindowMaximized ? L"1" : L"0") << L"\n";
+    stream << L"window.lastGame=" << g_SelectedGame << L"\n";
+
+    lock_guard<mutex> lock(g_CustomTargetsMutex);
+    stream << L"custom.count=" << g_Settings.customTargets.size() << L"\n";
+    for (size_t i = 0; i < g_Settings.customTargets.size(); ++i) {
+        stream << L"custom." << i << L".name=" << g_Settings.customTargets[i].name << L"\n";
+        stream << L"custom." << i << L".priority=" << g_Settings.customTargets[i].priority << L"\n";
+    }
+    stream << L"\n";
+
+    const wstring content = stream.str();
+    // 转为 UTF-8 写入（进程名等可能含非 ASCII 字符）
+    const int utf8Length = WideCharToMultiByte(CP_UTF8, 0, content.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (utf8Length <= 0) {
+        return;
+    }
+    string utf8(utf8Length - 1, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, content.c_str(), -1, utf8.data(), utf8Length, nullptr, nullptr);
+
+    HANDLE file = CreateFileW(g_ConfigPath.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    DWORD written = 0;
+    WriteFile(file, utf8.data(), static_cast<DWORD>(utf8.size()), &written, nullptr);
+    CloseHandle(file);
+}
+
+void LoadSettingsFromFile() {
+    if (g_ConfigPath.empty()) {
+        return;
+    }
+
+    HANDLE file = CreateFileW(g_ConfigPath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return;
+    }
+
+    LARGE_INTEGER fileSize = {};
+    GetFileSizeEx(file, &fileSize);
+    if (fileSize.QuadPart <= 0 || fileSize.QuadPart > 1024 * 1024) {
+        CloseHandle(file);
+        return;
+    }
+
+    string utf8(static_cast<size_t>(fileSize.QuadPart), '\0');
+    DWORD bytesRead = 0;
+    ReadFile(file, utf8.data(), static_cast<DWORD>(utf8.size()), &bytesRead, nullptr);
+    CloseHandle(file);
+    utf8.resize(bytesRead);
+
+    // 去掉 UTF-8 BOM
+    if (utf8.size() >= 3 && static_cast<unsigned char>(utf8[0]) == 0xEF &&
+        static_cast<unsigned char>(utf8[1]) == 0xBB && static_cast<unsigned char>(utf8[2]) == 0xBF) {
+        utf8.erase(0, 3);
+    }
+
+    const int wideLength = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
+    if (wideLength <= 0) {
+        return;
+    }
+    wstring content(wideLength - 1, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, content.data(), wideLength);
+
+    unordered_map<wstring, wstring> entries;
+    wstringstream stream(content);
+    wstring line;
+    while (getline(stream, line)) {
+        const size_t equals = line.find(L'=');
+        if (equals == wstring::npos) {
+            continue;
+        }
+        const wstring key = TrimCopyW(line.substr(0, equals));
+        const wstring value = TrimCopyW(line.substr(equals + 1));
+        if (!key.empty()) {
+            entries[key] = value;
+        }
+    }
+
+    auto readBool = [&entries](const wchar_t* key, bool fallback) {
+        const auto it = entries.find(key);
+        if (it == entries.end()) {
+            return fallback;
+        }
+        return it->second == L"1";
+    };
+    auto readInt = [&entries](const wchar_t* key, int fallback) {
+        const auto it = entries.find(key);
+        if (it == entries.end()) {
+            return fallback;
+        }
+        return _wtoi(it->second.c_str());
+    };
+
+    g_Settings.sysPower = readBool(L"global.sysPower", g_Settings.sysPower);
+    g_Settings.sysVbs = readBool(L"global.sysVbs", g_Settings.sysVbs);
+    g_Settings.sysVsync = readBool(L"global.sysVsync", g_Settings.sysVsync);
+    g_Settings.edgeSuppress = readBool(L"global.edgeSuppress", g_Settings.edgeSuppress);
+    g_Settings.disableHpet = readBool(L"global.disableHpet", g_Settings.disableHpet);
+    g_Settings.gameDvr = readBool(L"global.gameDvr", g_Settings.gameDvr);
+    g_Settings.gameMode = readBool(L"global.gameMode", g_Settings.gameMode);
+    g_Settings.qosLimit = readBool(L"global.qosLimit", g_Settings.qosLimit);
+    g_Settings.timerRes = readBool(L"global.timerRes", g_Settings.timerRes);
+    g_Settings.systemAnim = readBool(L"global.systemAnim", g_Settings.systemAnim);
+
+    for (int i = 0; i < 4; ++i) {
+        GameProfile& profile = g_Settings.profiles[i];
+        wchar_t key[64] = {};
+        swprintf_s(key, L"profile%d.aceSuppress", i);
+        profile.aceSuppress = readBool(key, profile.aceSuppress);
+        swprintf_s(key, L"profile%d.weGameSuppress", i);
+        profile.weGameSuppress = readBool(key, profile.weGameSuppress);
+        swprintf_s(key, L"profile%d.gameAvoid", i);
+        profile.gameAvoid = readBool(key, profile.gameAvoid);
+        swprintf_s(key, L"profile%d.steamSuppress", i);
+        profile.steamSuppress = readBool(key, profile.steamSuppress);
+        swprintf_s(key, L"profile%d.gameFullCore", i);
+        profile.gameFullCore = readBool(key, profile.gameFullCore);
+        swprintf_s(key, L"profile%d.disableEcores", i);
+        profile.disableEcores = readBool(key, profile.disableEcores);
+        swprintf_s(key, L"profile%d.avoidLastCore", i);
+        profile.avoidLastCore = readBool(key, profile.avoidLastCore);
+        swprintf_s(key, L"profile%d.scanInterval", i);
+        profile.scanInterval = max(5, min(300, readInt(key, profile.scanInterval)));
+    }
+
+    const int savedGame = readInt(L"window.lastGame", g_SelectedGame);
+    if (savedGame >= 0 && savedGame < 4) {
+        g_SelectedGame = savedGame;
+    }
+
+    lock_guard<mutex> lock(g_CustomTargetsMutex);
+    const int customCount = max(0, min(32, readInt(L"custom.count", 0)));
+    g_Settings.customTargets.clear();
+    for (int i = 0; i < customCount; ++i) {
+        wchar_t key[64] = {};
+        swprintf_s(key, L"custom.%d.name", i);
+        const auto nameIt = entries.find(key);
+        if (nameIt == entries.end() || nameIt->second.empty()) {
+            continue;
+        }
+        swprintf_s(key, L"custom.%d.priority", i);
+        CustomTarget target;
+        target.name = nameIt->second;
+        target.priority = max(0, min(2, readInt(key, 0)));
+        g_Settings.customTargets.push_back(target);
+    }
+}
+
+// ── 环境备份持久化：崩溃/强杀后自动恢复系统设置 ──
+// 守护启动时把备份写入磁盘文件；正常停止时删除。下次启动若发现备份文件
+// 仍然存在，说明上次进程未正常退出（崩溃/被强杀），此时加载备份并恢复环境。
+void SaveEnvironmentBackupToFile() {
+    if (g_BackupPath.empty()) {
+        return;
+    }
+    wstringstream stream;
+    stream << L"vbsState=" << g_Backup.vbsState << L"\n";
+    stream << L"hwSchMode=" << g_Backup.hwSchMode << L"\n";
+    for (int i = 0; i < 5; ++i) {
+        stream << L"vsync" << i << L"=" << g_Backup.vsyncStateNvidia[i] << L"\n";
+    }
+    stream << L"gameDvrEnabled=" << g_Backup.gameDvrEnabled << L"\n";
+    stream << L"appCaptureEnabled=" << g_Backup.appCaptureEnabled << L"\n";
+    stream << L"gameModeEnabled=" << g_Backup.gameModeEnabled << L"\n";
+    stream << L"qosNonBestEffort=" << g_Backup.qosNonBestEffort << L"\n";
+    stream << L"animClientArea=" << (g_Backup.animClientArea ? 1 : 0) << L"\n";
+    stream << L"animMenu=" << (g_Backup.animMenu ? 1 : 0) << L"\n";
+    stream << L"animCombo=" << (g_Backup.animCombo ? 1 : 0) << L"\n";
+    stream << L"animListSmooth=" << (g_Backup.animListSmooth ? 1 : 0) << L"\n";
+    stream << L"animTooltip=" << (g_Backup.animTooltip ? 1 : 0) << L"\n";
+    stream << L"animTooltipFade=" << (g_Backup.animTooltipFade ? 1 : 0) << L"\n";
+    // 记录启用了哪些优化，恢复时按需还原
+    stream << L"applied.sysPower=" << (g_Settings.sysPower ? 1 : 0) << L"\n";
+    stream << L"applied.sysVbs=" << (g_Settings.sysVbs ? 1 : 0) << L"\n";
+    stream << L"applied.sysVsync=" << (g_Settings.sysVsync ? 1 : 0) << L"\n";
+    stream << L"applied.gameDvr=" << (g_Settings.gameDvr ? 1 : 0) << L"\n";
+    stream << L"applied.gameMode=" << (g_Settings.gameMode ? 1 : 0) << L"\n";
+    stream << L"applied.qosLimit=" << (g_Settings.qosLimit ? 1 : 0) << L"\n";
+    stream << L"applied.timerRes=" << (g_Settings.timerRes ? 1 : 0) << L"\n";
+    stream << L"applied.systemAnim=" << (g_Settings.systemAnim ? 1 : 0) << L"\n";
+
+    const wstring content = stream.str();
+    const int utf8Length = WideCharToMultiByte(CP_UTF8, 0, content.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (utf8Length <= 0) {
+        return;
+    }
+    string utf8(utf8Length - 1, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, content.c_str(), -1, utf8.data(), utf8Length, nullptr, nullptr);
+
+    HANDLE file = CreateFileW(g_BackupPath.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    DWORD written = 0;
+    WriteFile(file, utf8.data(), static_cast<DWORD>(utf8.size()), &written, nullptr);
+    CloseHandle(file);
+}
+
+// 检查是否有上次未清理的环境备份：有则恢复并删除，返回是否发生了恢复
+bool RecoverEnvironmentFromCrash() {
+    if (g_BackupPath.empty()) {
+        return false;
+    }
+    if (GetFileAttributesW(g_BackupPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        return false;
+    }
+
+    HANDLE file = CreateFileW(g_BackupPath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    LARGE_INTEGER fileSize = {};
+    GetFileSizeEx(file, &fileSize);
+    if (fileSize.QuadPart <= 0 || fileSize.QuadPart > 1024 * 1024) {
+        CloseHandle(file);
+        DeleteFileW(g_BackupPath.c_str());
+        return false;
+    }
+    string utf8(static_cast<size_t>(fileSize.QuadPart), '\0');
+    DWORD bytesRead = 0;
+    ReadFile(file, utf8.data(), static_cast<DWORD>(utf8.size()), &bytesRead, nullptr);
+    CloseHandle(file);
+    utf8.resize(bytesRead);
+    if (utf8.size() >= 3 && static_cast<unsigned char>(utf8[0]) == 0xEF &&
+        static_cast<unsigned char>(utf8[1]) == 0xBB && static_cast<unsigned char>(utf8[2]) == 0xBF) {
+        utf8.erase(0, 3);
+    }
+    const int wideLength = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
+    if (wideLength <= 0) {
+        DeleteFileW(g_BackupPath.c_str());
+        return false;
+    }
+    wstring content(wideLength - 1, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, content.data(), wideLength);
+
+    unordered_map<wstring, wstring> entries;
+    wstringstream stream(content);
+    wstring line;
+    while (getline(stream, line)) {
+        const size_t equals = line.find(L'=');
+        if (equals == wstring::npos) {
+            continue;
+        }
+        entries[TrimCopyW(line.substr(0, equals))] = TrimCopyW(line.substr(equals + 1));
+    }
+    auto readInt = [&entries](const wchar_t* key, int fallback) {
+        const auto it = entries.find(key);
+        return it == entries.end() ? fallback : _wtoi(it->second.c_str());
+    };
+
+    // 先按备份还原 g_Backup，再按 applied.* 还原系统设置
+    const bool wasPower = readInt(L"applied.sysPower", 0) == 1;
+    const bool wasVbs = readInt(L"applied.sysVbs", 0) == 1;
+    const bool wasVsync = readInt(L"applied.sysVsync", 0) == 1;
+    const bool wasDvr = readInt(L"applied.gameDvr", 0) == 1;
+    const bool wasMode = readInt(L"applied.gameMode", 0) == 1;
+    const bool wasQos = readInt(L"applied.qosLimit", 0) == 1;
+    const bool wasTimer = readInt(L"applied.timerRes", 0) == 1;
+    const bool wasAnim = readInt(L"applied.systemAnim", 0) == 1;
+
+    g_Backup.vbsState = static_cast<DWORD>(readInt(L"vbsState", 1));
+    g_Backup.hwSchMode = static_cast<DWORD>(readInt(L"hwSchMode", 1));
+    for (int i = 0; i < 5; ++i) {
+        wchar_t key[32] = {};
+        swprintf_s(key, L"vsync%d", i);
+        g_Backup.vsyncStateNvidia[i] = static_cast<DWORD>(readInt(key, 1));
+    }
+    g_Backup.gameDvrEnabled = static_cast<DWORD>(readInt(L"gameDvrEnabled", 1));
+    g_Backup.appCaptureEnabled = static_cast<DWORD>(readInt(L"appCaptureEnabled", 1));
+    g_Backup.gameModeEnabled = static_cast<DWORD>(readInt(L"gameModeEnabled", 1));
+    g_Backup.qosNonBestEffort = static_cast<DWORD>(readInt(L"qosNonBestEffort", 0xFFFFFFFF));
+    g_Backup.animClientArea = readInt(L"animClientArea", 1) == 1;
+    g_Backup.animMenu = readInt(L"animMenu", 1) == 1;
+    g_Backup.animCombo = readInt(L"animCombo", 1) == 1;
+    g_Backup.animListSmooth = readInt(L"animListSmooth", 1) == 1;
+    g_Backup.animTooltip = readInt(L"animTooltip", 1) == 1;
+    g_Backup.animTooltipFade = readInt(L"animTooltipFade", 1) == 1;
+
+    // 临时启用对应开关，让 RestoreEnvironment 按需还原
+    const bool oldPower = g_Settings.sysPower;
+    const bool oldVbs = g_Settings.sysVbs;
+    const bool oldVsync = g_Settings.sysVsync;
+    const bool oldDvr = g_Settings.gameDvr;
+    const bool oldMode = g_Settings.gameMode;
+    const bool oldQos = g_Settings.qosLimit;
+    const bool oldTimer = g_Settings.timerRes;
+    const bool oldAnim = g_Settings.systemAnim;
+    g_Settings.sysPower = wasPower;
+    g_Settings.sysVbs = wasVbs;
+    g_Settings.sysVsync = wasVsync;
+    g_Settings.gameDvr = wasDvr;
+    g_Settings.gameMode = wasMode;
+    g_Settings.qosLimit = wasQos;
+    g_Settings.timerRes = wasTimer;
+    g_Settings.systemAnim = wasAnim;
+
+    RestoreEnvironment();
+
+    // 启动早期 g_GpuName 尚未检测，RestoreEnvironment 的 NVIDIA vsync 分支不会执行；
+    // 崩溃前若启用了 vsync 优化，这里直接按备份值还原
+    if (wasVsync) {
+        const wstring basePath = L"SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}\\";
+        for (int i = 0; i < 5; ++i) {
+            const wstring subKey = basePath + to_wstring(i);
+            SetRegDWORD(HKEY_LOCAL_MACHINE, subKey.c_str(), L"VSyncMode", g_Backup.vsyncStateNvidia[i]);
+        }
+    }
+
+    g_Settings.sysPower = oldPower;
+    g_Settings.sysVbs = oldVbs;
+    g_Settings.sysVsync = oldVsync;
+    g_Settings.gameDvr = oldDvr;
+    g_Settings.gameMode = oldMode;
+    g_Settings.qosLimit = oldQos;
+    g_Settings.timerRes = oldTimer;
+    g_Settings.systemAnim = oldAnim;
+
+    DeleteFileW(g_BackupPath.c_str());
+    return true;
+}
+
+// ── 托盘图标 ──
+void AddTrayIcon(HWND hwnd) {
+    if (g_TrayIconAdded) {
+        return;
+    }
+    NOTIFYICONDATAW data = {};
+    data.cbSize = sizeof(data);
+    data.hWnd = hwnd;
+    data.uID = kTrayIconId;
+    data.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    data.uCallbackMessage = WM_APP_TRAYICON;
+    data.hIcon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCE(1));
+    wcscpy_s(data.szTip, L"LYB 引擎 2.0");
+    if (Shell_NotifyIconW(NIM_ADD, &data)) {
+        g_TrayIconAdded = true;
+    }
+}
+
+void RemoveTrayIcon() {
+    if (!g_TrayIconAdded) {
+        return;
+    }
+    NOTIFYICONDATAW data = {};
+    data.cbSize = sizeof(data);
+    data.hWnd = g_MainWindow;
+    data.uID = kTrayIconId;
+    Shell_NotifyIconW(NIM_DELETE, &data);
+    g_TrayIconAdded = false;
+}
+
+void ShowTrayMenu() {
+    if (g_MainWindow == nullptr) {
+        return;
+    }
+    HMENU menu = CreatePopupMenu();
+    AppendMenuW(menu, MF_STRING, kTrayMenuShow, L"显示主窗口");
+    AppendMenuW(menu, MF_STRING, kTrayMenuToggleGuard, g_IsRunning.load() ? L"停止守护" : L"开始守护");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, kTrayMenuExit, L"退出");
+
+    POINT cursor = {};
+    GetCursorPos(&cursor);
+    SetForegroundWindow(g_MainWindow);
+    const int command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY, cursor.x, cursor.y, 0, g_MainWindow, nullptr);
+    DestroyMenu(menu);
+
+    if (command == kTrayMenuShow) {
+        ShowWindow(g_MainWindow, SW_RESTORE);
+        ShowWindow(g_MainWindow, SW_SHOW);
+        SetForegroundWindow(g_MainWindow);
+    } else if (command == kTrayMenuToggleGuard) {
+        if (g_IsRunning.load()) {
+            StopOptimizationGuard();
+        } else {
+            StartOptimizationGuard();
+        }
+    } else if (command == kTrayMenuExit) {
+        g_ExitRequested = true;
+        PostMessageW(g_MainWindow, WM_CLOSE, 0, 0);
+    }
 }
 
 void EnablePerMonitorDpiAwareness() {
@@ -480,6 +969,7 @@ wstring BuildStateJson() {
     const bool disableHpetChecked = hpetAvailable && g_Settings.disableHpet;
     const wstring memoryLabel = g_MemSpeed > 0 ? to_wstring(g_MemSpeed) + L" MHz" : L"不可用";
     const UINT windowDpi = GetWindowDpiSafe(g_MainWindow);
+    const GameProfile& profile = g_Settings.profiles[g_SelectedGame];
 
     wstring json = L"{\"type\":\"state\",\"payload\":{";
     json += L"\"running\":";
@@ -517,27 +1007,58 @@ wstring BuildStateJson() {
     json += BoolJson(g_Settings.edgeSuppress);
     json += L",\"disableHpet\":";
     json += BoolJson(disableHpetChecked);
+    json += L",\"gameDvr\":";
+    json += BoolJson(g_Settings.gameDvr);
+    json += L",\"gameMode\":";
+    json += BoolJson(g_Settings.gameMode);
+    json += L",\"qosLimit\":";
+    json += BoolJson(g_Settings.qosLimit);
+    json += L",\"timerRes\":";
+    json += BoolJson(g_Settings.timerRes);
+    json += L",\"systemAnim\":";
+    json += BoolJson(g_Settings.systemAnim);
     json += L",\"aceSuppress\":";
-    json += BoolJson(g_Settings.aceSuppress);
+    json += BoolJson(profile.aceSuppress);
     json += L",\"weGameSuppress\":";
-    json += BoolJson(g_Settings.weGameSuppress);
+    json += BoolJson(profile.weGameSuppress);
     json += L",\"gameAvoid\":";
-    json += BoolJson(g_Settings.gameAvoid);
+    json += BoolJson(profile.gameAvoid);
     json += L",\"steamSuppress\":";
-    json += BoolJson(g_Settings.steamSuppress);
+    json += BoolJson(profile.steamSuppress);
     json += L",\"gameFullCore\":";
-    json += BoolJson(g_Settings.gameFullCore);
+    json += BoolJson(profile.gameFullCore);
     json += L",\"disableEcores\":";
-    json += BoolJson(g_HasHybridCpu && g_Settings.disableEcores);
+    json += BoolJson(g_HasHybridCpu && profile.disableEcores);
+    json += L",\"avoidLastCore\":";
+    json += BoolJson(profile.avoidLastCore);
     json += L",\"scanInterval\":";
-    json += to_wstring(g_Settings.scanInterval);
-    json += L"}}}";
+    json += to_wstring(profile.scanInterval);
+    json += L",\"customTargets\":[";
+    {
+        lock_guard<mutex> lock(g_CustomTargetsMutex);
+        for (size_t i = 0; i < g_Settings.customTargets.size(); ++i) {
+            if (i > 0) {
+                json += L",";
+            }
+            json += L"{\"name\":\"";
+            json += JsonEscape(g_Settings.customTargets[i].name);
+            json += L"\",\"priority\":";
+            json += to_wstring(g_Settings.customTargets[i].priority);
+            json += L"}";
+        }
+    }
+    json += L"]}}}";
     return json;
 }
 
 void PushStateToWebView() {
     if (!g_PageReady || !g_WebView) {
         return;
+    }
+
+    // 若 WebView 已挂起（或挂起请求进行中），先恢复再推送，避免消息丢失
+    if (g_WebViewSuspended.load() || g_WebViewSuspendPending.load()) {
+        ResumeWebViewIfSuspended();
     }
 
     const wstring payload = BuildStateJson();
@@ -668,7 +1189,9 @@ void InitializeHardwareSnapshot() {
     g_MemSpeed = GetMemorySpeedSafe();
     DetectHeterogeneousCores();
     if (!g_HasHybridCpu) {
-        g_Settings.disableEcores = false;
+        for (auto& profile : g_Settings.profiles) {
+            profile.disableEcores = false;
+        }
     }
 }
 
@@ -679,7 +1202,21 @@ void InitializeHardwareSnapshotAsync() {
     }).detach();
 }
 
-void SuppressProcessTarget(const wstring& targetName, DWORD_PTR affinityMask, DWORD priorityClass) {
+// 单个目标的压制规格
+struct TargetSpec {
+    wstring name;
+    DWORD_PTR affinityMask;
+    DWORD priorityClass;
+};
+
+// 单快照批量压制：只创建一次进程快照，一次遍历匹配所有目标进程。
+// 相比逐个 SuppressProcessTarget（每个目标一次全系统快照），将 O(N) 次快照
+// 降为 O(1)，是守护循环里最大的性能优化点。
+void ApplyProcessTargets(const vector<TargetSpec>& targets) {
+    if (targets.empty()) {
+        return;
+    }
+
     HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (snapshot == INVALID_HANDLE_VALUE) {
         return;
@@ -690,50 +1227,46 @@ void SuppressProcessTarget(const wstring& targetName, DWORD_PTR affinityMask, DW
 
     if (Process32FirstW(snapshot, &processEntry)) {
         do {
-            if (_wcsicmp(targetName.c_str(), processEntry.szExeFile) != 0) {
-                continue;
-            }
-
-            HANDLE process = OpenProcess(PROCESS_SET_INFORMATION | PROCESS_QUERY_INFORMATION, FALSE, processEntry.th32ProcessID);
-            if (!process) {
-                process = OpenProcess(PROCESS_SET_INFORMATION, FALSE, processEntry.th32ProcessID);
-            }
-            if (!process) {
-                continue;
-            }
-
-            {
-                lock_guard<mutex> lock(g_ProcessBackupMutex);
-                if (g_ProcessBackup.find(processEntry.th32ProcessID) == g_ProcessBackup.end()) {
-                    DWORD_PTR processMask = affinityMask;
-                    DWORD_PTR systemMask = affinityMask;
-                    DWORD oldPriority = priorityClass;
-
-                    HANDLE queryProcess = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, processEntry.th32ProcessID);
-                    if (!queryProcess) {
-                        queryProcess = process;
-                    }
-
-                    const DWORD queriedPriority = GetPriorityClass(queryProcess);
-                    if (queriedPriority != 0) {
-                        oldPriority = queriedPriority;
-                    }
-
-                    if (!GetProcessAffinityMask(queryProcess, &processMask, &systemMask)) {
-                        processMask = systemMask != 0 ? systemMask : affinityMask;
-                    }
-
-                    if (queryProcess != process) {
-                        CloseHandle(queryProcess);
-                    }
-
-                    g_ProcessBackup[processEntry.th32ProcessID] = {processMask, oldPriority};
+            for (const auto& target : targets) {
+                if (_wcsicmp(target.name.c_str(), processEntry.szExeFile) != 0) {
+                    continue;
                 }
-            }
 
-            SetProcessAffinityMask(process, affinityMask);
-            SetPriorityClass(process, priorityClass);
-            CloseHandle(process);
+                const DWORD pid = processEntry.th32ProcessID;
+
+                // 用一个句柄同时完成备份与设置，避免重复 OpenProcess
+                HANDLE process = OpenProcess(PROCESS_SET_INFORMATION | PROCESS_QUERY_INFORMATION, FALSE, pid);
+                if (!process) {
+                    process = OpenProcess(PROCESS_SET_INFORMATION, FALSE, pid);
+                }
+                if (!process) {
+                    continue;
+                }
+
+                {
+                    lock_guard<mutex> lock(g_ProcessBackupMutex);
+                    if (g_ProcessBackup.find(pid) == g_ProcessBackup.end()) {
+                        DWORD_PTR processMask = target.affinityMask;
+                        DWORD_PTR systemMask = target.affinityMask;
+                        DWORD oldPriority = target.priorityClass;
+
+                        const DWORD queriedPriority = GetPriorityClass(process);
+                        if (queriedPriority != 0) {
+                            oldPriority = queriedPriority;
+                        }
+
+                        if (!GetProcessAffinityMask(process, &processMask, &systemMask)) {
+                            processMask = systemMask != 0 ? systemMask : target.affinityMask;
+                        }
+
+                        g_ProcessBackup[pid] = {processMask, oldPriority};
+                    }
+                }
+
+                SetProcessAffinityMask(process, target.affinityMask);
+                SetPriorityClass(process, target.priorityClass);
+                CloseHandle(process);
+            }
         } while (Process32NextW(snapshot, &processEntry));
     }
 
@@ -759,7 +1292,7 @@ void RestoreProcessPriorityNormal() {
 
     SYSTEM_INFO systemInfo = {};
     GetSystemInfo(&systemInfo);
-    const wchar_t* targets[] = {
+    const wchar_t* targetNames[] = {
         L"browser.exe", L"WeGame.exe", L"wegame.exe", L"wegame_env.exe",
         L"steam.exe", L"steamwebhelper.exe", L"msedge.exe", L"cs2.exe",
         L"VALORANT-Win64-Shipping.exe", L"DeltaForce.exe", L"TslGame.exe",
@@ -767,9 +1300,12 @@ void RestoreProcessPriorityNormal() {
         L"TenSafe.exe", L"TenSafe64.exe", L"TP3Helper.exe"
     };
 
-    for (const auto* target : targets) {
-        SuppressProcessTarget(target, systemInfo.dwActiveProcessorMask, NORMAL_PRIORITY_CLASS);
+    vector<TargetSpec> targets;
+    targets.reserve(18);
+    for (const auto* target : targetNames) {
+        targets.push_back({target, systemInfo.dwActiveProcessorMask, NORMAL_PRIORITY_CLASS});
     }
+    ApplyProcessTargets(targets);
 
     lock_guard<mutex> lock(g_ProcessBackupMutex);
     g_ProcessBackup.clear();
@@ -805,6 +1341,21 @@ void BackupEnvironment() {
         const wstring subKey = basePath + to_wstring(i);
         g_Backup.vsyncStateNvidia[i] = ReadRegDWORD(HKEY_LOCAL_MACHINE, subKey.c_str(), L"VSyncMode", 1);
     }
+
+    // GameDVR 后台录制
+    g_Backup.gameDvrEnabled = ReadRegDWORD(HKEY_CURRENT_USER, L"System\\GameConfigStore", L"GameDVR_Enabled", 1);
+    g_Backup.appCaptureEnabled = ReadRegDWORD(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\GameDVR", L"AppCaptureEnabled", 1);
+    // 系统游戏模式
+    g_Backup.gameModeEnabled = ReadRegDWORD(HKEY_CURRENT_USER, L"Software\\Microsoft\\GameBar", L"AutoGameModeEnabled", 1);
+    // QoS 带宽预留（0xFFFFFFFF 表示未限制）
+    g_Backup.qosNonBestEffort = ReadRegDWORD(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Policies\\Microsoft\\Windows\\Psched", L"NonBestEffortLimit", 0xFFFFFFFF);
+    // 系统动画开关
+    SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &g_Backup.animClientArea, 0);
+    SystemParametersInfoW(SPI_GETMENUANIMATION, 0, &g_Backup.animMenu, 0);
+    SystemParametersInfoW(SPI_GETCOMBOBOXANIMATION, 0, &g_Backup.animCombo, 0);
+    SystemParametersInfoW(SPI_GETLISTBOXSMOOTHSCROLLING, 0, &g_Backup.animListSmooth, 0);
+    SystemParametersInfoW(SPI_GETTOOLTIPANIMATION, 0, &g_Backup.animTooltip, 0);
+    SystemParametersInfoW(SPI_GETTOOLTIPFADE, 0, &g_Backup.animTooltipFade, 0);
 }
 
 void RestoreEnvironment() {
@@ -823,6 +1374,28 @@ void RestoreEnvironment() {
             SetRegDWORD(HKEY_LOCAL_MACHINE, subKey.c_str(), L"VSyncMode", g_Backup.vsyncStateNvidia[i]);
         }
     }
+
+    if (g_Settings.gameDvr) {
+        SetRegDWORD(HKEY_CURRENT_USER, L"System\\GameConfigStore", L"GameDVR_Enabled", g_Backup.gameDvrEnabled);
+        SetRegDWORD(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\GameDVR", L"AppCaptureEnabled", g_Backup.appCaptureEnabled);
+    }
+    if (g_Settings.gameMode) {
+        SetRegDWORD(HKEY_CURRENT_USER, L"Software\\Microsoft\\GameBar", L"AutoGameModeEnabled", g_Backup.gameModeEnabled);
+    }
+    if (g_Settings.qosLimit) {
+        SetRegDWORD(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Policies\\Microsoft\\Windows\\Psched", L"NonBestEffortLimit", g_Backup.qosNonBestEffort);
+    }
+    if (g_Settings.timerRes) {
+        timeEndPeriod(1);
+    }
+    if (g_Settings.systemAnim) {
+        SystemParametersInfoW(SPI_SETCLIENTAREAANIMATION, 0, reinterpret_cast<PVOID>(static_cast<INT_PTR>(g_Backup.animClientArea)), SPIF_SENDCHANGE);
+        SystemParametersInfoW(SPI_SETMENUANIMATION, 0, reinterpret_cast<PVOID>(static_cast<INT_PTR>(g_Backup.animMenu)), SPIF_SENDCHANGE);
+        SystemParametersInfoW(SPI_SETCOMBOBOXANIMATION, 0, reinterpret_cast<PVOID>(static_cast<INT_PTR>(g_Backup.animCombo)), SPIF_SENDCHANGE);
+        SystemParametersInfoW(SPI_SETLISTBOXSMOOTHSCROLLING, 0, reinterpret_cast<PVOID>(static_cast<INT_PTR>(g_Backup.animListSmooth)), SPIF_SENDCHANGE);
+        SystemParametersInfoW(SPI_SETTOOLTIPANIMATION, 0, reinterpret_cast<PVOID>(static_cast<INT_PTR>(g_Backup.animTooltip)), SPIF_SENDCHANGE);
+        SystemParametersInfoW(SPI_SETTOOLTIPFADE, 0, reinterpret_cast<PVOID>(static_cast<INT_PTR>(g_Backup.animTooltipFade)), SPIF_SENDCHANGE);
+    }
 }
 
 void ExecuteOptimizations() {
@@ -839,6 +1412,36 @@ void ExecuteOptimizations() {
     if (g_CpuName.find("Intel") == string::npos && g_Settings.disableHpet) {
         WinExec("bcdedit /deletevalue useplatformclock", SW_HIDE);
     }
+
+    // GameDVR 后台录制（降低录制与后台开销）
+    if (g_Settings.gameDvr) {
+        SetRegDWORD(HKEY_CURRENT_USER, L"System\\GameConfigStore", L"GameDVR_Enabled", 0);
+        SetRegDWORD(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\GameDVR", L"AppCaptureEnabled", 0);
+    }
+    // 系统游戏模式
+    if (g_Settings.gameMode) {
+        SetRegDWORD(HKEY_CURRENT_USER, L"Software\\Microsoft\\GameBar", L"AutoGameModeEnabled", 1);
+    }
+    // 禁用 QoS 带宽预留（需管理员权限）
+    if (g_Settings.qosLimit) {
+        SetRegDWORD(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Policies\\Microsoft\\Windows\\Psched", L"NonBestEffortLimit", 0);
+    }
+    // 高精度计时器（1ms）
+    if (g_Settings.timerRes) {
+        timeBeginPeriod(1);
+    }
+    // 关闭系统动画（减少视觉开销）
+    if (g_Settings.systemAnim) {
+        SystemParametersInfoW(SPI_SETCLIENTAREAANIMATION, 0, reinterpret_cast<PVOID>(static_cast<INT_PTR>(FALSE)), SPIF_SENDCHANGE);
+        SystemParametersInfoW(SPI_SETMENUANIMATION, 0, reinterpret_cast<PVOID>(static_cast<INT_PTR>(FALSE)), SPIF_SENDCHANGE);
+        SystemParametersInfoW(SPI_SETCOMBOBOXANIMATION, 0, reinterpret_cast<PVOID>(static_cast<INT_PTR>(FALSE)), SPIF_SENDCHANGE);
+        SystemParametersInfoW(SPI_SETLISTBOXSMOOTHSCROLLING, 0, reinterpret_cast<PVOID>(static_cast<INT_PTR>(FALSE)), SPIF_SENDCHANGE);
+        SystemParametersInfoW(SPI_SETTOOLTIPANIMATION, 0, reinterpret_cast<PVOID>(static_cast<INT_PTR>(FALSE)), SPIF_SENDCHANGE);
+        SystemParametersInfoW(SPI_SETTOOLTIPFADE, 0, reinterpret_cast<PVOID>(static_cast<INT_PTR>(FALSE)), SPIF_SENDCHANGE);
+    }
+
+    // 备份已持久化到磁盘：若进程异常退出（崩溃/强杀），下次启动自动恢复
+    SaveEnvironmentBackupToFile();
 }
 
 void HeartbeatThreadBody(unsigned long generation) {
@@ -861,57 +1464,82 @@ void HeartbeatThreadBody(unsigned long generation) {
     int secondsPassed = 0;
 
     while (g_IsRunning.load() && generation == g_RunGeneration.load()) {
+        const GameProfile& profile = g_Settings.profiles[g_SelectedGame];
         // 读取当前扫描间隔（用户可调），平台扫描自动错开 1 秒以对齐颗粒度
-        const int gameInterval = g_Settings.scanInterval;
-        const int platformInterval = g_Settings.scanInterval + 1;
+        const int gameInterval = profile.scanInterval;
+        const int platformInterval = profile.scanInterval + 1;
 
-        if (IsTencentGame(g_SelectedGame) && g_Settings.weGameSuppress) {
-            SuppressProcessTarget(L"browser.exe", lastCoreMask, IDLE_PRIORITY_CLASS);
-            SuppressProcessTarget(L"WeGame.exe", lastCoreMask, IDLE_PRIORITY_CLASS);
-            SuppressProcessTarget(L"wegame.exe", lastCoreMask, IDLE_PRIORITY_CLASS);
-            SuppressProcessTarget(L"wegame_env.exe", lastCoreMask, IDLE_PRIORITY_CLASS);
-        }
+        vector<TargetSpec> targets;
+        targets.reserve(40);
 
+        // ── 平台周期：Edge / WeGame / ACE / Steam ──
         if (secondsPassed % platformInterval == 0) {
             if (g_Settings.edgeSuppress) {
-                SuppressProcessTarget(L"msedge.exe", lastCoreMask, IDLE_PRIORITY_CLASS);
+                targets.push_back({L"msedge.exe", lastCoreMask, IDLE_PRIORITY_CLASS});
             }
 
             if (IsTencentGame(g_SelectedGame)) {
-                if (g_Settings.aceSuppress) {
+                if (profile.aceSuppress) {
                     for (const auto& aceProcess : aceList) {
-                        SuppressProcessTarget(aceProcess, lastCoreMask, IDLE_PRIORITY_CLASS);
+                        targets.push_back({aceProcess, lastCoreMask, IDLE_PRIORITY_CLASS});
                     }
                 }
-                if (g_Settings.weGameSuppress) {
-                    SuppressProcessTarget(L"browser.exe", lastCoreMask, IDLE_PRIORITY_CLASS);
-                    SuppressProcessTarget(L"WeGame.exe", lastCoreMask, IDLE_PRIORITY_CLASS);
-                    SuppressProcessTarget(L"wegame.exe", lastCoreMask, IDLE_PRIORITY_CLASS);
-                    SuppressProcessTarget(L"wegame_env.exe", lastCoreMask, IDLE_PRIORITY_CLASS);
+                if (profile.weGameSuppress) {
+                    targets.push_back({L"browser.exe", lastCoreMask, IDLE_PRIORITY_CLASS});
+                    targets.push_back({L"WeGame.exe", lastCoreMask, IDLE_PRIORITY_CLASS});
+                    targets.push_back({L"wegame.exe", lastCoreMask, IDLE_PRIORITY_CLASS});
+                    targets.push_back({L"wegame_env.exe", lastCoreMask, IDLE_PRIORITY_CLASS});
                 }
-            } else if (g_Settings.steamSuppress) {
-                SuppressProcessTarget(L"steam.exe", lastCoreMask, BELOW_NORMAL_PRIORITY_CLASS);
-                SuppressProcessTarget(L"steamwebhelper.exe", lastCoreMask, IDLE_PRIORITY_CLASS);
+            } else if (profile.steamSuppress) {
+                targets.push_back({L"steam.exe", lastCoreMask, BELOW_NORMAL_PRIORITY_CLASS});
+                targets.push_back({L"steamwebhelper.exe", lastCoreMask, IDLE_PRIORITY_CLASS});
             }
         }
 
+        // ── 游戏周期：游戏进程 + 自定义进程 ──
         if (secondsPassed % gameInterval == 0) {
-            if (g_HasHybridCpu && g_Settings.disableEcores && g_PCoreAffinityMask != 0) {
-                if (g_SelectedGame == 0) SuppressProcessTarget(L"VALORANT-Win64-Shipping.exe", g_PCoreAffinityMask, HIGH_PRIORITY_CLASS);
-                if (g_SelectedGame == 1) SuppressProcessTarget(L"DeltaForce.exe", g_PCoreAffinityMask, HIGH_PRIORITY_CLASS);
-                if (g_SelectedGame == 2) SuppressProcessTarget(L"cs2.exe", g_PCoreAffinityMask, HIGH_PRIORITY_CLASS);
-                if (g_SelectedGame == 3) SuppressProcessTarget(L"TslGame.exe", g_PCoreAffinityMask, HIGH_PRIORITY_CLASS);
+            // 游戏进程核心掩码：开启「避开最后一核」时排除末核，否则使用全部核心
+            const DWORD_PTR gameFullMask = systemInfo.dwActiveProcessorMask;
+            const DWORD_PTR gameCoreMask = profile.avoidLastCore ? gameAvoidMask : gameFullMask;
+
+            if (g_HasHybridCpu && profile.disableEcores && g_PCoreAffinityMask != 0) {
+                if (g_SelectedGame == 0) targets.push_back({L"VALORANT-Win64-Shipping.exe", g_PCoreAffinityMask, HIGH_PRIORITY_CLASS});
+                if (g_SelectedGame == 1) targets.push_back({L"DeltaForce.exe", g_PCoreAffinityMask, HIGH_PRIORITY_CLASS});
+                if (g_SelectedGame == 2) targets.push_back({L"cs2.exe", g_PCoreAffinityMask, HIGH_PRIORITY_CLASS});
+                if (g_SelectedGame == 3) targets.push_back({L"TslGame.exe", g_PCoreAffinityMask, HIGH_PRIORITY_CLASS});
             }
 
             if (IsTencentGame(g_SelectedGame)) {
-                if (g_Settings.gameAvoid) {
-                    if (g_SelectedGame == 0) SuppressProcessTarget(L"VALORANT-Win64-Shipping.exe", gameAvoidMask, HIGH_PRIORITY_CLASS);
-                    if (g_SelectedGame == 1) SuppressProcessTarget(L"DeltaForce.exe", gameAvoidMask, HIGH_PRIORITY_CLASS);
+                if (profile.gameAvoid) {
+                    if (g_SelectedGame == 0) targets.push_back({L"VALORANT-Win64-Shipping.exe", gameCoreMask, HIGH_PRIORITY_CLASS});
+                    if (g_SelectedGame == 1) targets.push_back({L"DeltaForce.exe", gameCoreMask, HIGH_PRIORITY_CLASS});
                 }
-            } else if (g_Settings.gameFullCore) {
-                if (g_SelectedGame == 2) SuppressProcessTarget(L"cs2.exe", gameAvoidMask, HIGH_PRIORITY_CLASS);
-                if (g_SelectedGame == 3) SuppressProcessTarget(L"TslGame.exe", gameAvoidMask, HIGH_PRIORITY_CLASS);
+            } else if (profile.gameFullCore) {
+                if (g_SelectedGame == 2) targets.push_back({L"cs2.exe", gameCoreMask, HIGH_PRIORITY_CLASS});
+                if (g_SelectedGame == 3) targets.push_back({L"TslGame.exe", gameCoreMask, HIGH_PRIORITY_CLASS});
             }
+
+            // 自定义进程压制列表
+            {
+                lock_guard<mutex> lock(g_CustomTargetsMutex);
+                for (const auto& target : g_Settings.customTargets) {
+                    if (target.name.empty()) {
+                        continue;
+                    }
+                    DWORD priorityClass = IDLE_PRIORITY_CLASS;
+                    if (target.priority == 1) {
+                        priorityClass = BELOW_NORMAL_PRIORITY_CLASS;
+                    } else if (target.priority == 2) {
+                        priorityClass = NORMAL_PRIORITY_CLASS;
+                    }
+                    targets.push_back({target.name, lastCoreMask, priorityClass});
+                }
+            }
+        }
+
+        // 单次快照批量应用所有目标
+        if (!targets.empty()) {
+            ApplyProcessTargets(targets);
         }
 
         if (WaitForSingleObject(g_HeartbeatStopEvent, 1000) != WAIT_TIMEOUT) {
@@ -934,9 +1562,10 @@ void StartOptimizationGuard() {
     ExecuteOptimizations();
     g_IsRunning = true;
     const unsigned long generation = g_RunGeneration.fetch_add(1) + 1;
+    const int interval = g_Settings.profiles[g_SelectedGame].scanInterval;
     wchar_t statusBuf[128];
     swprintf_s(statusBuf, L"守护已启动。游戏进程每 %d 秒检查一次，平台进程每 %d 秒检查一次。",
-               g_Settings.scanInterval, g_Settings.scanInterval + 1);
+               interval, interval + 1);
     g_StatusMessage = statusBuf;
     g_HeartbeatThread = thread([generation]() { HeartbeatThreadBody(generation); });
     RequestStateSync();
@@ -958,6 +1587,10 @@ void StopOptimizationGuard() {
     RestoreEnvironment();
     RestoreProcessPriorityNormal();
     g_StatusMessage = L"守护已停止，原始系统设置已恢复。";
+    // 正常停止：删除磁盘上的环境备份（下次启动不会再触发恢复）
+    if (!g_BackupPath.empty()) {
+        DeleteFileW(g_BackupPath.c_str());
+    }
     RequestStateSync();
 }
 
@@ -972,18 +1605,30 @@ vector<wstring> SplitMessage(const wstring& message, wchar_t delimiter) {
 }
 
 void ApplySetting(const wstring& key, bool enabled) {
+    // ── 全局系统优化（步骤 1） ──
     if (key == L"sysPower") g_Settings.sysPower = enabled;
     else if (key == L"sysVbs") g_Settings.sysVbs = enabled;
     else if (key == L"sysVsync") g_Settings.sysVsync = enabled;
     else if (key == L"edgeSuppress") g_Settings.edgeSuppress = enabled;
     else if (key == L"disableHpet" && !IsIntelCpu()) g_Settings.disableHpet = enabled;
-    else if (key == L"aceSuppress") g_Settings.aceSuppress = enabled;
-    else if (key == L"weGameSuppress") g_Settings.weGameSuppress = enabled;
-    else if (key == L"gameAvoid") g_Settings.gameAvoid = enabled;
-    else if (key == L"steamSuppress") g_Settings.steamSuppress = enabled;
-    else if (key == L"gameFullCore") g_Settings.gameFullCore = enabled;
-    else if (key == L"disableEcores" && g_HasHybridCpu) g_Settings.disableEcores = enabled;
-    else if (key == L"scanInterval") { /* handled in HandleWebMessage */ }
+    else if (key == L"gameDvr") g_Settings.gameDvr = enabled;
+    else if (key == L"gameMode") g_Settings.gameMode = enabled;
+    else if (key == L"qosLimit") g_Settings.qosLimit = enabled;
+    else if (key == L"timerRes") g_Settings.timerRes = enabled;
+    else if (key == L"systemAnim") g_Settings.systemAnim = enabled;
+    // ── 每游戏配置（步骤 3） ──
+    else {
+        GameProfile& profile = g_Settings.profiles[g_SelectedGame];
+        if (key == L"aceSuppress") profile.aceSuppress = enabled;
+        else if (key == L"weGameSuppress") profile.weGameSuppress = enabled;
+        else if (key == L"gameAvoid") profile.gameAvoid = enabled;
+        else if (key == L"steamSuppress") profile.steamSuppress = enabled;
+        else if (key == L"gameFullCore") profile.gameFullCore = enabled;
+        else if (key == L"disableEcores" && g_HasHybridCpu) profile.disableEcores = enabled;
+        else if (key == L"avoidLastCore") profile.avoidLastCore = enabled;
+    }
+
+    SaveSettingsToFile();
 }
 
 void HandleWebMessage(const wstring& message) {
@@ -1002,6 +1647,7 @@ void HandleWebMessage(const wstring& message) {
         const int selection = GameSelectionFromId(parts[1]);
         if (selection >= 0) {
             g_SelectedGame = selection;
+            SaveSettingsToFile();
         }
         RequestStateSync();
         return;
@@ -1011,11 +1657,49 @@ void HandleWebMessage(const wstring& message) {
         if (parts[1] == L"scanInterval") {
             const int val = _wtoi(parts[2].c_str());
             if (val >= 5 && val <= 300) {
-                g_Settings.scanInterval = val;
+                g_Settings.profiles[g_SelectedGame].scanInterval = val;
+                SaveSettingsToFile();
             }
         } else {
             ApplySetting(parts[1], parts[2] == L"1");
         }
+        RequestStateSync();
+        return;
+    }
+
+    if (parts[0] == L"custom" && parts.size() >= 2) {
+        if (parts[1] == L"add" && parts.size() >= 4) {
+            const wstring name = TrimCopyW(parts[2]);
+            int priority = _wtoi(parts[3].c_str());
+            if (priority < 0) priority = 0;
+            if (priority > 2) priority = 2;
+            if (!name.empty() && name.size() <= 64) {
+                lock_guard<mutex> lock(g_CustomTargetsMutex);
+                bool found = false;
+                for (auto& target : g_Settings.customTargets) {
+                    if (_wcsicmp(target.name.c_str(), name.c_str()) == 0) {
+                        target.priority = priority;
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found && g_Settings.customTargets.size() < 32) {
+                    g_Settings.customTargets.push_back({name, priority});
+                }
+            }
+        } else if (parts[1] == L"remove" && parts.size() >= 3) {
+            lock_guard<mutex> lock(g_CustomTargetsMutex);
+            for (auto it = g_Settings.customTargets.begin(); it != g_Settings.customTargets.end(); ++it) {
+                if (_wcsicmp(it->name.c_str(), parts[2].c_str()) == 0) {
+                    g_Settings.customTargets.erase(it);
+                    break;
+                }
+            }
+        } else if (parts[1] == L"clear") {
+            lock_guard<mutex> lock(g_CustomTargetsMutex);
+            g_Settings.customTargets.clear();
+        }
+        SaveSettingsToFile();
         RequestStateSync();
         return;
     }
@@ -1083,6 +1767,100 @@ protected:
 private:
     atomic<ULONG> refCount_{1};
 };
+
+// 挂起完成的回调：TrySuspend 是异步的，成功与否通过此回调通知
+class TrySuspendCompletedHandler final : public ICoreWebView2TrySuspendCompletedHandler, private RefCounted {
+public:
+    STDMETHODIMP QueryInterface(REFIID riid, void** object) override {
+        if (object == nullptr) {
+            return E_POINTER;
+        }
+        *object = nullptr;
+        if (riid == IID_IUnknown || riid == IID_ICoreWebView2TrySuspendCompletedHandler) {
+            *object = static_cast<ICoreWebView2TrySuspendCompletedHandler*>(this);
+            AddRef();
+            return S_OK;
+        }
+        return E_NOINTERFACE;
+    }
+
+    ULONG STDMETHODCALLTYPE AddRef() override {
+        return AddRefImpl();
+    }
+
+    ULONG STDMETHODCALLTYPE Release() override {
+        return ReleaseImpl();
+    }
+
+    STDMETHODIMP Invoke(HRESULT errorCode, BOOL isSuccessful) override {
+        g_WebViewSuspendPending = false;
+        if (FAILED(errorCode) || !isSuccessful) {
+            // 挂起失败（例如页面正在播放音频）时保持未挂起状态
+            g_WebViewSuspended = false;
+            g_WebViewResumeRequested = false;
+            return S_OK;
+        }
+        g_WebViewSuspended = true;
+        // 挂起期间用户已恢复窗口：投递到 UI 线程立即恢复，避免页面冻结在后台
+        if (g_WebViewResumeRequested.exchange(false)) {
+            if (g_MainWindow != nullptr) {
+                PostMessageW(g_MainWindow, WM_APP_RESUME_WEBVIEW, 0, 0);
+            }
+        }
+        return S_OK;
+    }
+};
+
+// 窗口失焦/最小化时挂起 WebView，释放渲染进程内存
+void SuspendWebViewIfIdle() {
+    if (!g_WebView12 || !g_PageReady || g_WebViewSuspended.load() || g_WebViewSuspendPending.load()) {
+        return;
+    }
+
+    BOOL isSuspended = FALSE;
+    if (SUCCEEDED(g_WebView12->get_IsSuspended(&isSuspended)) && isSuspended) {
+        g_WebViewSuspended = true;
+        return;
+    }
+
+    // WebView 可见时 TrySuspend 会失败（0x8007139F），先隐藏再挂起
+    if (g_WebViewController) {
+        g_WebViewController->put_IsVisible(FALSE);
+    }
+
+    g_WebViewSuspendPending = true;
+    TrySuspendCompletedHandler* handler = new TrySuspendCompletedHandler();
+    const HRESULT hr = g_WebView12->TrySuspend(handler);
+    handler->Release();
+    if (FAILED(hr)) {
+        g_WebViewSuspendPending = false;
+    }
+}
+
+// 窗口重新获得焦点/还原时恢复 WebView 渲染
+void ResumeWebViewIfSuspended() {
+    if (!g_WebView12) {
+        return;
+    }
+
+    // 挂起请求尚未完成：标记待恢复，由完成回调负责立即恢复
+    if (g_WebViewSuspendPending.load()) {
+        g_WebViewResumeRequested = true;
+        return;
+    }
+
+    BOOL isSuspended = FALSE;
+    if (SUCCEEDED(g_WebView12->get_IsSuspended(&isSuspended)) && isSuspended) {
+        g_WebView12->Resume();
+    }
+    g_WebViewSuspended = false;
+
+    // 恢复可见性
+    if (g_WebViewController) {
+        g_WebViewController->put_IsVisible(TRUE);
+        ResizeWebViewToClientArea();
+    }
+}
 
 class WebMessageReceivedHandler final : public ICoreWebView2WebMessageReceivedEventHandler, private RefCounted {
 public:
@@ -1181,6 +1959,7 @@ public:
 
         g_WebViewController = controller;
         g_WebViewController->get_CoreWebView2(&g_WebView);
+        g_WebView->QueryInterface(IID_ICoreWebView2_12, reinterpret_cast<void**>(g_WebView12.GetAddressOf()));
         ResizeWebViewToClientArea();
 
         static const IID kController2Guid =
@@ -1268,6 +2047,17 @@ void InitializeWebView() {
     g_HtmlFolder = GetModuleDirectory() + L"\\html";
     const wstring userDataFolder = GetModuleDirectory() + L"\\webview2_user_data";
 
+    // 通过官方环境变量注入 Chromium 参数，显著降低内存占用：
+    //  - disable-gpu / disable-gpu-compositing：界面是简单静态页，无需 GPU 进程
+    //  - renderer-process-limit=1：仅保留单个渲染进程
+    //  - js-flags=--max-old-space-size=96：限制渲染进程 V8 堆上限
+    //  - disable-extensions / disable-background-networking：关闭无关后台组件
+    SetEnvironmentVariableW(
+        L"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+        L"--disable-gpu --disable-gpu-compositing --renderer-process-limit=1 "
+        L"--js-flags=--max-old-space-size=96 --disable-extensions "
+        L"--disable-background-networking --disable-component-update --no-first-run");
+
     ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler* environmentHandler = new EnvironmentCompletedHandler();
     const HRESULT hr = CreateCoreWebView2EnvironmentWithOptions(
         nullptr,
@@ -1323,10 +2113,23 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
             }
             break;
 
+        case WM_KILLFOCUS:
+            // 失焦不再挂起：只保留最小化时挂起，避免点击其他窗口时页面被隐藏/冻结
+            break;
+
+        case WM_SETFOCUS:
+            ResumeWebViewIfSuspended();
+            break;
+
         case WM_SIZE:
             ResizeWebViewToClientArea();
             ApplyWindowCornerRegion();
             UpdateWindowStateSnapshot();
+            if (wParam == SIZE_MINIMIZED) {
+                SuspendWebViewIfIdle();
+            } else if (wParam == SIZE_RESTORED || wParam == SIZE_MAXIMIZED) {
+                ResumeWebViewIfSuspended();
+            }
             return 0;
 
         case WM_DPICHANGED: {
@@ -1351,13 +2154,42 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
             PushStateToWebView();
             return 0;
 
+        case WM_APP_RESUME_WEBVIEW:
+            ResumeWebViewIfSuspended();
+            return 0;
+
+        case WM_APP_TRAYICON:
+            if (lParam == WM_LBUTTONDBLCLK || lParam == WM_LBUTTONUP) {
+                // 单击/双击托盘图标：显示主窗口
+                ShowWindow(hwnd, SW_RESTORE);
+                ShowWindow(hwnd, SW_SHOW);
+                SetForegroundWindow(hwnd);
+                return 0;
+            }
+            if (lParam == WM_RBUTTONUP) {
+                ShowTrayMenu();
+                return 0;
+            }
+            break;
+
+        case WM_CLOSE:
+            // 未明确要求退出时，隐藏到托盘继续驻留（守护不中断）
+            if (!g_ExitRequested) {
+                SaveSettingsToFile();
+                ShowWindow(hwnd, SW_HIDE);
+                return 0;
+            }
+            break;
+
         case WM_DESTROY:
+            RemoveTrayIcon();
             StopOptimizationGuard();
             if (g_HeartbeatStopEvent != nullptr) {
                 CloseHandle(g_HeartbeatStopEvent);
                 g_HeartbeatStopEvent = nullptr;
             }
             g_WebView = nullptr;
+            g_WebView12 = nullptr;
             g_WebViewController = nullptr;
             PostQuitMessage(0);
             return 0;
@@ -1370,6 +2202,47 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int showCommand) {
     EnablePerMonitorDpiAwareness();
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     EnableDebugPrivilege();
+
+    // 配置文件与环境备份路径（与 exe 同目录）
+    g_ConfigPath = GetModuleDirectory() + L"\\lyb_config.ini";
+    g_BackupPath = GetModuleDirectory() + L"\\lyb_env_backup.ini";
+
+    // 上次若异常退出（崩溃/被强杀），残留的环境备份会在此时自动恢复系统设置
+    const bool recoveredFromCrash = RecoverEnvironmentFromCrash();
+
+    // 加载上次保存的用户配置（方案、开关、自定义进程、扫描间隔等）
+    LoadSettingsFromFile();
+
+    // 管理员权限检查：QoS 带宽预留、VBS 等系统级优化需要管理员权限，
+    // 检测到非管理员时提示用户以管理员身份重新启动
+    BOOL isAdmin = FALSE;
+    {
+        SID_IDENTIFIER_AUTHORITY ntAuthority = SECURITY_NT_AUTHORITY;
+        PSID adminGroup = nullptr;
+        if (AllocateAndInitializeSid(&ntAuthority, 2, SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &adminGroup)) {
+            CheckTokenMembership(nullptr, adminGroup, &isAdmin);
+            FreeSid(adminGroup);
+        }
+    }
+    if (!isAdmin) {
+        const int choice = MessageBoxW(
+            nullptr,
+            L"检测到当前未以管理员身份运行。\n\n"
+            L"以下系统级优化将无法生效：\n"
+            L"  · 关闭 VBS（虚拟化安全）\n"
+            L"  · 禁用 QoS 带宽预留\n"
+            L"  · 关闭 GameDVR（部分需要写系统配置）\n\n"
+            L"是否以管理员身份重新启动？",
+            L"LYB 引擎",
+            MB_ICONINFORMATION | MB_YESNO);
+        if (choice == IDYES) {
+            wchar_t exePath[MAX_PATH] = {0};
+            GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+            ShellExecuteW(nullptr, L"runas", exePath, nullptr, nullptr, SW_SHOWNORMAL);
+            CoUninitialize();
+            return 0;
+        }
+    }
 
     g_HeartbeatStopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
 
@@ -1386,7 +2259,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int showCommand) {
     const LONG workWidth = workArea.right - workArea.left;
     const LONG workHeight = workArea.bottom - workArea.top;
     const LONG initialWidth = max<LONG>(kMinimumWindowWidth, min<LONG>(1560, workWidth - 96));
-    const LONG initialHeight = max<LONG>(kMinimumWindowHeight, min<LONG>(980, workHeight - 96));
+    const LONG initialHeight = max<LONG>(kMinimumWindowHeight, min<LONG>(1100, workHeight - 96));
     const LONG initialX = workArea.left + max<LONG>(0, (workWidth - initialWidth) / 2);
     const LONG initialY = workArea.top + max<LONG>(0, (workHeight - initialHeight) / 2);
 
@@ -1410,6 +2283,10 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int showCommand) {
     }
 
     g_MainWindow = window;
+    AddTrayIcon(window);
+    if (recoveredFromCrash) {
+        g_StatusMessage = L"检测到上次异常退出，已自动恢复原始系统设置。";
+    }
     ApplyWindowCornerRegion();
     ShowWindow(window, showCommand);
     UpdateWindow(window);

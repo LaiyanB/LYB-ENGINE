@@ -71,7 +71,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-g++ -std=gnu++17 -O2 -DUNICODE -D_UNICODE -Ipackages\webview2\build\native\include "%SRC%" "%ICON_OBJ%" -o "%OUT%" -mwindows -static-libgcc -static-libstdc++ -L. -lWebView2Loader -lole32 -loleaut32 -luuid -luser32 -lgdi32 -ladvapi32 -lshell32
+g++ -std=gnu++17 -O2 -DUNICODE -D_UNICODE -Ipackages\webview2\build\native\include "%SRC%" "%ICON_OBJ%" -o "%OUT%" -mwindows -static-libgcc -static-libstdc++ -L. -lWebView2Loader -lole32 -loleaut32 -luuid -luser32 -lgdi32 -ladvapi32 -lshell32 -lwinmm
 if errorlevel 1 (
     echo [ERROR] g++ link failed.
     exit /b 1
@@ -82,6 +82,9 @@ if errorlevel 1 (
     echo [ERROR] Failed to copy %PTHREAD_DLL%.
     exit /b 1
 )
+
+if not exist "html" mkdir "html"
+copy /y "index.html" "html\index.html" >nul
 
 echo Build complete: %OUT%
 exit /b 0
